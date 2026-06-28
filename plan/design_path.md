@@ -47,11 +47,16 @@ A 3-5 sentence summary of what this component does, the problem it solves, and i
 ## 3. Proposed Architecture
 * Detailed design diagrams (Mermaid format).
 * API/Interface definitions (interfaces, records, key public methods).
-* Memory layout and data structures (especially critical for off-heap segments).
+* **Memory & Concurrency Safety:**
+  * How are we avoiding lock contention and cache invalidation storms?
+  * What concurrency primitives are used (e.g., lock-free CAS, fine-grained segment locks, ReentrantLocks)?
+* **Replication & Scaling Mechanics (If applicable):**
+  * How does this component handle read scaling (e.g., Read Index vs. Leader Reads vs. Follower Reads)?
+  * How does the replication engine handle write performance (e.g., Pipelining, Batching)?
 
 ## 4. Cross-Node & Networking Protocol (If Applicable)
 * Frame format (e.g., magic bytes, length prefixes, payload types).
-* Serialization strategy (avoiding JVM object creation).
+* Serialization strategy (avoiding JVM object creation to prevent GC cycles).
 
 ## 5. Alternatives Considered
 * *Alternative A (e.g., Using JNI + C++ engine instead of Java FFM API):* Why was it rejected?
