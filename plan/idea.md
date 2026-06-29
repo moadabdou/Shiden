@@ -21,9 +21,10 @@ By bypassing standard JVM runtime bottlenecks (like heap-based Garbage Collectio
 The ultimate objective of Shiden is not to build a standard application, but to prove mastery over the machine's hardware and network constraints.
 
 * **Achieve Sub-Millisecond Latency:** Eliminate garbage collection pauses by manual pointer arithmetic and storing keys and values directly in native memory segments outside the JVM heap.
-* **Massive Connection Concurrency:** Scale to tens of thousands of simultaneous client connections with minimal CPU overhead by binding network connections to lightweight Virtual Threads.
-* **Orchestrate Atomic Task Failure:** Coordinate multi-node requests safely. If a replication call to one cluster node fails, all other related pending tasks must be automatically canceled to prevent resource leaks.
-* **Implement Distributed Consensus:** Build a custom peer-to-peer state replication engine that uses mathematical consensus (Raft) to handle leader election and log replication over unstable networks.
+* **Hybrid Concurrency Model (Fast/Slow Paths):** Scale to tens of thousands of simultaneous client connections by combining Netty's Event Loops for fast I/O with Java 21 Virtual Threads for slow, blocking tasks (e.g., disk I/O, network waits).
+* **Iterative Distributed Architectures:** 
+  * **v1.0 (AP Mode):** Implement a highly available, eventually consistent system using Consistent Hashing and a Gossip protocol for node discovery.
+  * **Future Versions (CP Mode):** Build a custom peer-to-peer state replication engine that uses mathematical consensus (Raft) to handle leader election and log replication for strict consistency configurations.
 
 ---
 
@@ -40,6 +41,9 @@ graph TD
 ```
 
 1. **Off-Heap Storage Engine (FFM API):** Utilizes Java 21's Foreign Function & Memory API to bypass the JVM Heap entirely, allocating and managing memory directly from the operating system.
-2. **Lightweight Concurrent I/O:** Uses Java 21 Virtual Threads to allow non-blocking, highly concurrent client-server and inter-node TCP communication.
-3. **Structured Concurrency:** Uses structured task scopes to handle parallel network broadcasts as a single, atomic unit of work.
-4. **Consensus & Log Replication:** Implements the Raft Consensus Algorithm over a custom binary protocol to ensure the cluster remains consistent and self-healing.
+2. **Hybrid Fast/Slow Path Concurrency:** 
+   * **The Fast Path (Netty):** Uses Netty's Event Loops for accepting connections, RESP protocol parsing, and interacting with off-heap memory.
+   * **The Slow Path (Virtual Threads):** Delegates blocking tasks (AOF disk flushes, snapshotting, replication waits) to Virtual Threads to avoid blocking the main event loops.
+3. **Pluggable Consistency Models:**
+   * **Eventual Consistency (v1.0):** Prioritizes Availability and Partition-tolerance (AP) with Gossip protocol and Consistent Hashing.
+   * **Strong Consistency (Future):** Implements the Raft Consensus Algorithm to ensure strict consistency (CP) as a configurable option.

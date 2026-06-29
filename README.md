@@ -6,7 +6,7 @@
 
 ![Shiden Cover](assets/cover.png)
 
-> **Shiden** (named after the lightning-fast fighter aircraft *Shiden Kai*) is a pure-Java distributed in-memory data grid. It bypasses JVM runtime bottlenecks (like Garbage Collection pauses) by executing manual pointer-arithmetic over raw OS memory and scales connections using lightweight Virtual Threads.
+> **Shiden** (named after the lightning-fast fighter aircraft *Shiden Kai*) is a pure-Java distributed in-memory data grid. It bypasses JVM runtime bottlenecks (like Garbage Collection pauses) by executing manual pointer-arithmetic over raw OS memory. It uses a hybrid fast/slow path concurrency model combining Netty Event Loops and lightweight Virtual Threads.
 
 ---
 
@@ -21,8 +21,8 @@
 | Goal | The Easy Way | The Shiden Way |
 | :--- | :--- | :--- |
 | **Memory Control** | Let the JVM allocate objects and rely on GC to clean up. | Bypass JVM heap completely. Manually align memory and compute byte offsets with the **FFM API (`MemorySegment`)**. |
-| **Concurrency** | Use standard platform thread pools (like Tomcat). | Bind client sockets to **Virtual Threads** and coordinate atomic node broadcasts using **Structured Concurrency**. |
-| **Fault Tolerance** | Rely on managed cloud databases or replication frameworks. | Write a pure mathematical implementation of the **Raft Consensus Protocol** over custom binary TCP. |
+| **Concurrency** | Use standard platform thread pools (like Tomcat). | **Hybrid Fast/Slow Path**: Use **Netty Event Loops** for fast non-blocking I/O and memory access, delegating slow/blocking tasks (AOF flushes) to **Virtual Threads**. |
+| **Fault Tolerance** | Rely on managed cloud databases or replication frameworks. | **Phased Evolution**: Starts with an **AP-mode Eventual Consistency** engine (Gossip & Consistent Hashing) in v1.0, building towards a pure mathematical **Raft Consensus Protocol** (CP-mode) in future versions. |
 
 ---
 

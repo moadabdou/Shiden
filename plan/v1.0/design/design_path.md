@@ -24,14 +24,14 @@ Before choosing any technologies, define the strict non-functional constraints. 
 ### Target SLOs for Shiden
 * **Latency SLO:** p99 read/write latency must remain $< 2.0\text{ ms}$ under a load of 10,000 concurrent connections.
 * **Garbage Collection (GC) SLO:** Zero Stop-The-World (STW) pauses originating from the database engine during steady-state operations (achieved via off-heap memory).
-* **Consistency SLO:** Linearizable consistency for write operations on a key, managed through Raft-based state replication.
-* **Availability SLO:** The cluster must remain write-available as long as a quorum ($\lfloor N/2 \rfloor + 1$) of nodes is healthy, and read-available on healthy nodes.
+* **Consistency SLO:** Eventual consistency for write operations across the cluster (v1.0 AP mode), with an option for linearizable consistency in future CP-mode configurations.
+* **Availability SLO:** The cluster must remain write-available on any healthy node, utilizing asynchronous replication and Gossip protocol for topology updates.
 
 ---
 
 ## 3. Phase 2: The RFC (Request for Comments) Template
 
-For every major component (e.g., *Off-Heap Memory Manager*, *Raft Consensus Engine*, *Virtual Thread TCP Server*), you should write a short RFC using this template to force explicit architectural decisions.
+For every major component (e.g., *Off-Heap Memory Manager*, *Gossip Protocol Engine*, *Hybrid Concurrency TCP Server*), you should write a short RFC using this template to force explicit architectural decisions.
 
 ```markdown
 # RFC-XXX: [Component Name]
@@ -63,7 +63,7 @@ A 3-5 sentence summary of what this component does, the problem it solves, and i
 * *Alternative B (e.g., Using Netty instead of Java 21 Virtual Threads):* Why was it rejected?
 
 ## 6. SRE & Observability Plan
-* **Metrics:** What telemetry is required (e.g., active off-heap bytes, Raft log index, CPU utilization)?
+* **Metrics:** What telemetry is required (e.g., active off-heap bytes, cluster topology size, CPU utilization)?
 * **Failure Modes:** How does this component behave when disk space is full, memory is exhausted, or the network partitions?
 ```
 
@@ -75,9 +75,9 @@ When reviewing your own design docs or code, wear different "hats" to stress-tes
 
 | Role Hat | Focus Area | Critical Questions to Ask Yourself |
 | :--- | :--- | :--- |
-| **Principal Systems Architect** | Extensibility, Clean Abstractions, Simplicity | *Are we over-engineering? Can we simplify the state transitions in our Raft engine? Do our abstractions leak implementation details?* |
+| **Principal Systems Architect** | Extensibility, Clean Abstractions, Simplicity | *Are we over-engineering? Can we simplify the state transitions in our Gossip engine? Do our abstractions leak implementation details?* |
 | **Performance Engineer** | Memory Overhead, Allocations, CPU Cache | *Are we creating short-lived objects in critical paths? Are virtual threads blocking on native monitors (synchronized blocks) causing thread pinning?* |
-| **SRE / Production Engineer** | Failures, Monitoring, Operations | *What happens if a node runs out of native memory? Does it crash cleanly, or does it corrupt the Raft log? How do we debug a stuck consensus election?* |
+| **SRE / Production Engineer** | Failures, Monitoring, Operations | *What happens if a node runs out of native memory? Does it crash cleanly, or does it corrupt the off-heap segments? How do we debug a split-brain topology?* |
 | **Security Engineer** | Network safety, Memory isolation | *Are we validating input buffer sizes before writing to off-heap segments? Can a malformed network packet trigger an out-of-bounds memory write (Buffer Overflow)?* |
 
 ---
@@ -112,8 +112,8 @@ For systems programming, designs must be backed by raw benchmarks before proceed
 
 Before marking a major system milestone as "Production-Ready," perform active chaos testing:
 1. **Network Partition (Split-Brain) Simulation:**
-   * Simulate a 3-node cluster and drop network packets between Node A and the rest. Verify that Node A steps down as leader and the remaining 2 nodes elect a new leader.
+   * Simulate a 3-node cluster and drop network packets between Node A and the rest. Verify that the Consistent Hashing ring updates correctly and read/write requests are routed to the remaining active nodes.
 2. **Crash-Recovery Verification:**
-   * Write data, kill a node forcefully (`kill -9`), restart it, and verify that the Raft state machine rebuilds its state perfectly from the write-ahead log (WAL).
+   * Write data, kill a node forcefully (`kill -9`), restart it, and verify that the node rebuilds its off-heap state perfectly from the Append-Only File (AOF) or snapshot.
 3. **Leak Detection:**
    * Run continuous load tests for several hours and monitor process RSS (Resident Set Size) memory to verify that native memory does not leak.
