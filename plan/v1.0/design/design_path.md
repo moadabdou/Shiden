@@ -11,8 +11,8 @@ graph TD
     A[Phase 1: SLO & Requirements Definition] --> B[Phase 2: Write RFC / Design Doc]
     B --> X[Phase 2.5: Define Architecture Invariants]
     X --> C[Phase 3: Architectural Design Review ADR]
-    C --> D[Phase 4: PoC & Benchmarking]
-    D --> E[Phase 5: Implementation & Code Review]
+    C --> D[Phase 4: Prototype & Validation]
+    D --> E[Phase 5: Incremental Implementation]
     E --> F[Phase 6: Chaos & SRE Validation]
 ```
 
@@ -75,6 +75,9 @@ Before writing code, extract the absolute guarantees from the RFCs into a single
 * **Invariant 8:** Replicas never accept client write commands.
 * **Invariant 9:** The Netty EventLoop never performs blocking disk I/O.
 * **Invariant 10:** The Partition Thread never performs blocking network/disk I/O.
+* **Invariant 11:** The implementation SHALL use a bounded cache-line padded MPSC queue. Queue implementations that allocate on enqueue or perform blocking synchronization are forbidden.
+* **Invariant 12:** Elapsed timers and timeouts must rely exclusively on `System.nanoTime()`. `System.currentTimeMillis()` is forbidden for elapsed duration.
+* **Invariant 13:** Topology changes are rejected if protocol compatibility (Min/Max Supported Versions) cannot be negotiated across the entire cluster.
 
 ---
 
@@ -131,15 +134,17 @@ When reviewing, evaluate the architecture from six distinct engineering perspect
 
 ---
 
-## 6. Phase 4: Prototyping & Benchmarking (PoC)
+## 6. Phase 4: Prototype & Validation
 
-For systems programming, designs must be backed by raw benchmarks before proceeding to production implementation.
-1. **Micro-benchmarking (JMH):** Measure operations/second and garbage allocation rate for the lock-free queues and off-heap FFM accesses.
+This phase validates assumptions. The goal is NOT to build the final product, but to verify that the theoretical architecture holds up to hardware realities (NUMA, FFM, Cache Contention).
+
+### Key Benchmark Targets for Shiden
+1. **Micro-benchmarking (JMH):** Validate the `TARGETS.md` budget (e.g., MPSC throughput > 50M ops/sec, Hash Index lookup < 80ns).
 2. **GC Logging & Analysis:** Run with `-XX:+UseZGC -Xlog:gc*` to ensure steady-state operations trigger zero GC cycles.
 
 ---
 
-## 7. Phase 5: Implementation & Code Quality
+## 7. Phase 5: Incremental Implementation
 
 * **Incremental Commits:** Code should be merged in small, logical chunks.
 * **Strict Thread Safety Guidelines:** Document which classes are thread-safe and their synchronization primitives (MPSC vs SPSC vs Single-Threaded).
