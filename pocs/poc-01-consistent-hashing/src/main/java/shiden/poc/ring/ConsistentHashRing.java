@@ -27,18 +27,17 @@ public class ConsistentHashRing {
     private final Set<String> physicalNodes = ConcurrentHashMap.newKeySet();
 
     // Volatile holder for current ring state to allow lock-free lookups
-    private volatile RingState ringState = new RingState(new int[0], new String[0]);
-
-    // Volatile slot table for Strategy B (Fixed-size partitions)
-    private volatile String[] slotTable;
+    private volatile RingState ringState;
 
     private static class RingState {
         final int[] hashes;
         final String[] nodes;
+        final String[] slotTable;
 
-        RingState(int[] hashes, String[] nodes) {
+        RingState(int[] hashes, String[] nodes, String[] slotTable) {
             this.hashes = hashes;
             this.nodes = nodes;
+            this.slotTable = slotTable;
         }
     }
 
@@ -57,10 +56,13 @@ public class ConsistentHashRing {
     }
 
     public ConsistentHashRing(HashType hashType, int vnodesPerNode, int numSlots) {
+        if (numSlots < 0 || (numSlots > 0 && (numSlots & (numSlots - 1)) != 0)) {
+            throw new IllegalArgumentException("Number of slots must be a power of 2");
+        }
         this.hashType = hashType;
         this.vnodesPerNode = vnodesPerNode;
         this.numSlots = numSlots;
-        this.slotTable = numSlots > 0 ? new String[numSlots] : null;
+        this.ringState = new RingState(new int[0], new String[0], numSlots > 0 ? new String[numSlots] : null);
     }
 
     /**
@@ -86,16 +88,17 @@ public class ConsistentHashRing {
      * If slots are enabled, uses the fast slot table mapping instead.
      */
     public String routeKey(String key) {
+        RingState state = this.ringState;
         if (numSlots > 0) {
             int slotId = getSlotForKey(key);
-            String[] currentTable = this.slotTable;
+            String[] currentTable = state.slotTable;
             if (currentTable == null || slotId < 0 || slotId >= currentTable.length) {
                 return null;
             }
             return currentTable[slotId];
         }
 
-        return routeKeyOnState(this.ringState, key);
+        return routeKeyOnState(state, key);
     }
 
     private String routeKeyOnState(RingState state, String key) {
@@ -126,18 +129,19 @@ public class ConsistentHashRing {
     }
 
     public String[] getSlotTable() {
-        return slotTable == null ? null : slotTable.clone();
+        String[] table = ringState.slotTable;
+        return table == null ? null : table.clone();
     }
 
     public int getSlotForKey(String key) {
         if (numSlots <= 0) {
             return -1;
         }
-        return (calculateHash(key) & 0x7fffffff) % numSlots;
+        return calculateHash(key) & (numSlots - 1);
     }
 
     public String routeSlot(int slotId) {
-        String[] currentTable = this.slotTable;
+        String[] currentTable = ringState.slotTable;
         if (currentTable == null || slotId < 0 || slotId >= numSlots) {
             return null;
         }
@@ -154,10 +158,7 @@ public class ConsistentHashRing {
 
     private void rebuildRing() {
         if (physicalNodes.isEmpty()) {
-            ringState = new RingState(new int[0], new String[0]);
-            if (numSlots > 0) {
-                Arrays.fill(slotTable, null);
-            }
+            ringState = new RingState(new int[0], new String[0], numSlots > 0 ? new String[numSlots] : null);
             return;
         }
 
@@ -188,17 +189,19 @@ public class ConsistentHashRing {
             nodes[i] = entries.get(i).node;
         }
 
-        RingState newRingState = new RingState(hashes, nodes);
-        this.ringState = newRingState;
+        // Create a temporary state to route the slots
+        RingState tempState = new RingState(hashes, nodes, null);
 
         // Rebuild slot table if slots are enabled
+        String[] newSlotTable = null;
         if (numSlots > 0) {
-            String[] newSlotTable = new String[numSlots];
+            newSlotTable = new String[numSlots];
             for (int slotId = 0; slotId < numSlots; slotId++) {
                 String slotKey = "slot-" + slotId;
-                newSlotTable[slotId] = routeKeyOnState(newRingState, slotKey);
+                newSlotTable[slotId] = routeKeyOnState(tempState, slotKey);
             }
-            this.slotTable = newSlotTable;
         }
+
+        this.ringState = new RingState(hashes, nodes, newSlotTable);
     }
 }
