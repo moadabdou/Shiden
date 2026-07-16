@@ -1,0 +1,27 @@
+# Maven build directory
+**/target/
+**/dependency-reduced-pom.xml
+
+# Compiled classes and packaging
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+
+# IDEs and editors
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# OS generated files
+.DS_Store
+Thumbs.db

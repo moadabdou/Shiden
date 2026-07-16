@@ -2,7 +2,9 @@ package shiden.poc;
 
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
+import shiden.poc.ring.ConsistentHashRing;
 
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 @BenchmarkMode(Mode.AverageTime)
@@ -13,18 +15,42 @@ import java.util.concurrent.TimeUnit;
 @Fork(1)
 public class HashRingBenchmark {
 
-    // TODO: Define @Param values for vnodes (e.g. 10, 100, 500)
-    // TODO: Define @Param values for hashType (e.g. MURMUR3, JDK_HASHCODE)
+    @Param({"10", "100", "500"})
+    public int vnodes;
+
+    @Param({"MURMUR3", "JDK_HASHCODE"})
+    public String hashType;
+
+    @Param({"CONSISTENT", "SLOTS"})
+    public String routingMode;
+
+    private ConsistentHashRing ring;
+    private String[] keys;
 
     @Setup(Level.Trial)
     public void setup() {
-        // TODO: Initialize your ConsistentHashRing and pre-generate keys
+        int slots = "SLOTS".equals(routingMode) ? 1024 : 0;
+        ring = new ConsistentHashRing(
+                ConsistentHashRing.HashType.valueOf(hashType),
+                vnodes,
+                slots
+        );
+        for (int i = 1; i <= 5; i++) {
+            ring.addNode("node-" + i);
+        }
+
+        keys = new String[10_000];
+        for (int i = 0; i < keys.length; i++) {
+            keys[i] = "key-" + i;
+        }
     }
 
     @Benchmark
     @Threads(Threads.MAX)
     public void testRouteKey(Blackhole bh) {
-        // TODO: Route random keys and consume the result to prevent dead-code elimination.
-        // Hint: Avoid thread contention on shared random seeds!
+        int idx = ThreadLocalRandom.current().nextInt(keys.length);
+        String key = keys[idx];
+        String node = ring.routeKey(key);
+        bh.consume(node);
     }
 }
