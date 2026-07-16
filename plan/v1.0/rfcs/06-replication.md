@@ -101,3 +101,29 @@ This RFC establishes the following architectural guarantees:
 * **Distributed Failover Load:** Partition leadership is scattered; the death of one node distributes the recovery load smoothly across the entire cluster.
 * **Flexible Consistency:** Clients can choose Async for speed or Sync for durability.
 * **Hardware Agnostic Replication:** Using Logical Command Shipping instead of Physical Page Shipping ensures replicas can have completely different RAM/CPU architectures than the Primary.
+
+## 9. Design Rationale: Omission of Merkle Trees
+
+### 9.1. Omission in v1.0
+Merkle trees and active anti-entropy sync protocols are intentionally omitted from Shiden v1.0. Because the cluster coordination protocol enforces a single-primary replication model per partition, replicas are passive followers. Synchronization is reduced to a straightforward sequential timeline:
+* **Small gaps** are resolved by replaying missing log commands (RSNs).
+* **Large gaps** are resolved by full partition snapshot transfers and catch-up replays.
+
+### 9.2. The Write Tax
+Maintaining a Merkle Tree in a high-throughput IMDG adds a performance tax on **every write operation**, even though replica recovery is an uncommon edge case. 
+
+```
+Standard Write Path:
+Client Write -> Assign RSN -> Apply Mutation -> Append to Replication Buffer -> Replicate
+
+With Merkle Tree Maintenance:
+Client Write -> Assign RSN -> Apply Mutation -> Update Merkle Path -> Recompute Hashes -> Append to Replication Buffer -> Replicate
+```
+
+To preserve the nanosecond-level latency budget of the write path, Shiden optimizes for the common case (writes) by avoiding this write tax, accepting a heavier recovery mechanism (full snapshots) for the uncommon case (long outages).
+
+### 9.3. Future Work: Integrity Verification
+While architectural conflicts are resolved by the single-primary model, operational replicas can still silently diverge due to software bugs, memory corruption, network failures, or disk bit rot (once persistence is implemented). 
+
+Future versions of Shiden may introduce compact off-heap Merkle Trees, checksums, or partition digests to periodically verify partition integrity in the background without affecting hot-path latency.
+
