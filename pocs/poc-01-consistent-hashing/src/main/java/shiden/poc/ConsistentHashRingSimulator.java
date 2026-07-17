@@ -167,20 +167,30 @@ public class ConsistentHashRingSimulator {
         // Add 6th node
         slotRing.addNode("node-6");
 
-        String[] newSlots = new String[TOTAL_KEYS];
         int slotsMigrated = 0;
         for (int i = 0; i < TOTAL_KEYS; i++) {
-            newSlots[i] = slotRing.routeKey("key-" + i);
-            if (!originalSlots[i].equals(newSlots[i])) {
+            if (!originalSlots[i].equals(slotRing.routeKey("key-" + i))) {
                 slotsMigrated++;
             }
         }
 
         double slotsPct = (slotsMigrated / (double) TOTAL_KEYS) * 100.0;
 
-        System.out.printf("Naive Modulo Hashing Migrated          : %d / %d keys (%.2f%%)\n", moduloMigrated, TOTAL_KEYS, moduloPct);
-        System.out.printf("Consistent Hashing (V=150) Migrated       : %d / %d keys (%.2f%%)\n", consistentMigrated, TOTAL_KEYS, consistentPct);
-        System.out.printf("Slot-based Hashing (Q=1024, V=150) Migrated: %d / %d keys (%.2f%%)\n", slotsMigrated, TOTAL_KEYS, slotsPct);
+        // Model migration durations for a 10 GB dataset
+        // Modulo: moves 83.49% of 10GB = 8.55GB. At 100 MB/s (typical db inserts), takes ~85.5 seconds
+        // Consistent Hashing: moves 14.56% of 10GB = 1.49GB. At 15 MB/s (slowed by 900 small token range files / random seeks), takes ~99.4 seconds
+        // Slot Hashing: moves 13.34% of 10GB = 1.37GB. At 120 MB/s (fast contiguous slot segment streaming), takes ~11.4 seconds
+        double moduloBytes = (moduloPct / 100.0) * 10.0 * 1024; // MB
+        double consistentBytes = (consistentPct / 100.0) * 10.0 * 1024; // MB
+        double slotsBytes = (slotsPct / 100.0) * 10.0 * 1024; // MB
+
+        double moduloTime = moduloBytes / 100.0; // seconds
+        double consistentTime = consistentBytes / 15.0; // seconds
+        double slotsTime = slotsBytes / 120.0; // seconds
+
+        System.out.printf("Naive Modulo Hashing Migrated          : %d / %d keys (%.2f%%) | Est. Time (10GB): %.1fs\n", moduloMigrated, TOTAL_KEYS, moduloPct, moduloTime);
+        System.out.printf("Consistent Hashing (V=150) Migrated    : %d / %d keys (%.2f%%) | Est. Time (10GB): %.1fs (Slowed by Random VNode I/O)\n", consistentMigrated, TOTAL_KEYS, consistentPct, consistentTime);
+        System.out.printf("Slot-based Hashing (Q=1024, V=150)     : %d / %d keys (%.2f%%) | Est. Time (10GB): %.1fs (Fast Sequential Slot Stream)\n", slotsMigrated, TOTAL_KEYS, slotsPct, slotsTime);
         System.out.println("Theoretical expected migration under Consistent Hashing: ~16.67% (1/6th of keys)");
         System.out.println("Theoretical expected migration under Modulo Hashing    : ~83.33% (5/6th of keys)");
     }
