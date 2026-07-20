@@ -14,7 +14,24 @@ Consistent hashing is the foundational building block for partition routing in d
    - *Solution*: Map each physical node to $V$ virtual positions (vnodes) scattered randomly across the ring. This averages out the segment sizes, leading to a uniform distribution of keys.
 5. **Hash Functions (Collision & Distribution)**:
    - Cryptographic hashes (MD5, SHA-256): High collision resistance, but slow.
-   - Non-cryptographic hashes (Murmur3, xxHash): High-speed, excellent distribution, much lower CPU overhead.
+   - Non-cryptographic hashes (Murmur3, xxHash3): High-speed, excellent distribution, much lower CPU overhead. *(Note: PoC-01 uses 32-bit Murmur3 as a lightweight verification baseline, whereas production Shiden standardizes on xxHash3 per RFC-005 for SIMD-accelerated throughput).*
+
+---
+
+## 🌐 Integration Context: Role of PoC-01 in Shiden
+
+To understand how PoC-01 fits into Shiden's overall architecture, it maps directly to cluster routing and topology management:
+
+### 1. What PoC-01 Directly Powers in Shiden (Cluster Topology)
+The **Consistent Hash Ring** validated in PoC-01 is the core algorithm used in:
+* **RFC-005 (Cluster Topology & Partitioning)**: Determines which physical Shiden nodes own which logical database partitions.
+* **RFC-011 (Cluster Coordination)**: Manages cluster topology updates during node joins, leaves, and failovers with minimal key migration ($K/N$).
+* **Smart Client Routing**: Allows client drivers to compute key locations locally in $O(\log V)$ time, routing requests directly to the owning partition node without proxy hops.
+
+### 2. How it Interacts with the Rest of the Engine
+* **PoC-01 (Consistent Hashing)**: Routes a key (e.g. `user:123`) to a specific **Node** and **Partition ID** at the cluster layer.
+* **RFC-002 (Off-Heap Hash Index)**: Once on the correct partition node, maps `user:123` to a physical memory pointer `(PageID, SlotID)` inside that partition.
+* **PoC-02 / RFC-001 (Storage Engine)**: Retrieves or stores the payload from raw off-heap native memory.
 
 ---
 

@@ -48,7 +48,7 @@ Storage Engine
 4. **Index Layer:** Maps logical keys to physical `(Page ID, Slot ID)` pointers, and plugs into eviction policies.
 
 ### 3.2. Page Memory Architecture (Inspired by Apache Ignite)
-To avoid the external fragmentation inherent in dynamic allocations, memory will be requested from the OS in massive chunks and logically divided into **fixed-size pages** (e.g., 4KB or 8KB). 
+To avoid the external fragmentation inherent in dynamic allocations, physical native memory is managed through a strict Allocator Hierarchy (RFC-008): 1GB Arena Regions are mapped from the OS in 16KB Allocator Page Extents, which are logically carved into **fixed-size 4KB Storage Pages**. 
 
 * **External Fragmentation Solution:** When an entire page is evicted or freed, it creates a perfectly sized hole for exactly one new page, eliminating external memory fragmentation.
 * **Internal Fragmentation Solution (Data Packing):** A single 4KB page will not just store one small 50-byte key-value pair. Following Apache Ignite's model, we will pack multiple key-value entries into a single page sequentially. 
@@ -144,7 +144,7 @@ Inside the Payload area, individual records are packed using the following binar
 * **Memory Alignment:** The total size of the record will be mathematically padded to a strict **16-byte boundary**. This guarantees that all 64-bit fields fall on aligned CPU boundaries, preventing hardware penalties and enabling modern 128/256-bit SIMD (AVX) instructions for vectorized scans.
 
 ### 3.6. FFM API Integration (Java 21)
-* **Allocation:** The initial implementation uses `Arena.ofShared()`. The abstraction intentionally isolates the allocation backend so alternative FFM strategies can be adopted without changing higher layers.
+* **Allocation:** Following the Partition Ownership Model (§3.8), each partition uses a thread-confined arena (`Arena.ofConfined()`). This eliminates JVM thread-synchronization checks inside FFM scope validations while guaranteeing zero lock contention. The abstraction isolates the allocation backend so alternative FFM strategies can be evaluated without changing higher layers.
 * Internal data structures will use **64-bit integer byte offsets** (raw pointers).
 
 ### 3.7. Eviction Index Pluggability

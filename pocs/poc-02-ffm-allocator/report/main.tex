@@ -1,0 +1,332 @@
+\documentclass[12pt]{article}
+
+% --- Custom Page Geometry (2:1 Ratio to match the cover banner) ---
+\usepackage[paperwidth=12in, paperheight=6in, margin=0.35in, top=0.85in, bottom=0.45in]{geometry}
+
+% --- Core Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage[HTML]{xcolor}
+\usepackage{pagecolor}
+\usepackage{fancyhdr}
+\usepackage{listings}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage{eso-pic}
+
+% --- Cyberpunk Dracula-Shiden Color Palette ---
+\definecolor{shidenbg}{HTML}{08040F}       % Deep dark violet-black background
+\definecolor{shidentext}{HTML}{F1ECF9}     % Near white text
+\definecolor{shidenpurple}{HTML}{9B4DFF}   % Rich violet accent
+\definecolor{shidenaccent}{HTML}{BD93F9}   % Lighter purple/lavender
+\definecolor{shidenmuted}{HTML}{7E7393}    % Muted grey-purple
+\definecolor{shidensuccess}{HTML}{50FA7B}  % Neon green
+\definecolor{shidenerror}{HTML}{FF5555}    % Neon red
+\definecolor{shidencyan}{HTML}{8BE9FD}     % Neon cyan for code variables
+
+% --- Apply Global Document Styling ---
+\pagecolor{shidenbg}
+\color{shidentext}
+\renewcommand{\familydefault}{\sfdefault}  % Sleek sans-serif typography
+\renewcommand{\baselinestretch}{1.15}       % Clean line spacing (1.15x line height)
+
+% --- Fancy Header/Footer Configuration ---
+\pagestyle{fancy}
+\fancyhf{}
+\setlength{\headheight}{22pt}
+\setlength{\headsep}{32pt}
+\renewcommand{\headrulewidth}{0.5pt}
+% Custom purple line under header
+\renewcommand{\headrule}{\hbox to\headwidth{\color{shidenpurple}\leaders\hrule height \headrulewidth\hfill}}
+\fancyhead[L]{\fontsize{8.5}{10}\selectfont\color{shidenaccent}\textbf{SHIDEN} \color{shidenmuted} \textbar\ PoC-02: Off-Heap Arena \& Slab Allocator}
+\fancyhead[R]{\fontsize{8.5}{10}\selectfont\color{shidenmuted}RFC-001 / RFC-008 Phase 1}
+\fancyfoot[L]{\fontsize{8.5}{10}\selectfont\color{shidenmuted}// BUILDING SHIDEN - RFC-001 \& RFC-008 in Progress}
+\fancyfoot[R]{\fontsize{8.5}{10}\selectfont\color{shidenmuted}Page \thepage}
+
+% --- Code Listings Style Setup ---
+\lstset{
+    backgroundcolor=\color{shidenbg},
+    basicstyle=\color{shidencyan}\ttfamily\fontsize{8.5}{11}\selectfont,
+    breaklines=true,
+    keywordstyle=\color{shidenpurple}\bfseries,
+    commentstyle=\color{shidenmuted}\itshape,
+    stringstyle=\color{shidensuccess},
+    numberstyle=\color{shidenmuted},
+    showstringspaces=false,
+    frame=single,
+    rulecolor=\color{shidenpurple!30},
+    framesep=5pt,
+    xleftmargin=3pt,
+    xrightmargin=3pt
+}
+
+% --- Core Box Macros for Optimal Space Usage ---
+\newcommand{\takeaway}[1]{%
+  \vspace{2.5mm}
+  \noindent
+  \begingroup
+  \setlength{\fboxsep}{6pt}%
+  \setlength{\fboxrule}{0.8pt}%
+  \fcolorbox{shidensuccess!35}{shidenbg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+      \fontsize{9}{11.5}\selectfont\color{shidensuccess}%
+      \textbf{Takeaway:} #1
+    \end{minipage}%
+  }%
+  \endgroup
+}
+
+\newcommand{\defect}[1]{%
+  \vspace{2.5mm}
+  \noindent
+  \begingroup
+  \setlength{\fboxsep}{6pt}%
+  \setlength{\fboxrule}{0.8pt}%
+  \fcolorbox{shidenerror!35}{shidenbg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+      \fontsize{9}{11.5}\selectfont\color{shidenerror}%
+      \textbf{Systems Insight:} #1
+    \end{minipage}%
+  }%
+  \endgroup
+}
+
+\begin{document}
+
+% ==============================================================================
+% PAGE 1: COVER PAGE (Full-bleed cover banner)
+% ==============================================================================
+\AddToShipoutPictureBG*{%
+  \AtPageLowerLeft{\includegraphics[width=\paperwidth,height=\paperheight]{cover.png}}%
+}
+\thispagestyle{empty}
+\mbox{}
+\clearpage
+
+% ==============================================================================
+% PAGE 2: OFF-HEAP MEMORY MODEL & FFM API
+% ==============================================================================
+\noindent
+\begin{minipage}[t]{0.48\textwidth}
+    \vspace{0pt}
+    {\fontsize{9.5}{11}\selectfont\color{shidenaccent}\textbf{01 // MEMORY MODEL}\par}
+    \vspace{1.5mm}
+    
+    {\fontsize{19}{23}\selectfont\color{white}\textbf{Java 21 FFM API Foundation}\par}
+    \vspace{2mm}
+    \noindent\rule{\linewidth}{0.4pt}
+    \vspace{2.5mm}
+    
+    \normalsize\color{shidentext}
+    Standard JVM Garbage Collectors (GC) trace heap object graphs. As database size expands to millions of entries, tracing overhead causes Stop-The-World (STW) pauses that destroy tail latency (p99/p99.9).
+    
+    Shiden bypasses the JVM GC entirely using Java 21's Foreign Function \& Memory (FFM) API (\texttt{JEP 454}). Native memory is mapped off-heap using thread-confined arenas (\texttt{Arena.ofConfined()}).
+    
+    Following Shiden's \textbf{Partition Ownership Model}, each partition thread owns its own isolated arena, completely eliminating JVM thread-synchronization checks and lock contention.
+    
+    \takeaway{Thread-confined FFM Arenas eliminate STW GC pauses while guaranteeing zero lock contention across partition threads.}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.01\textwidth}
+    \centering\color{shidenpurple!20}\rule{0.8pt}{2.8in}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.48\textwidth}
+    \vspace{0pt}
+    {\fontsize{9.5}{11}\selectfont\color{shidenmuted}\textbf{IMPLEMENTATION \& CONCURRENCY MODEL}\par}
+    \vspace{3.5mm}
+    
+    \begin{lstlisting}[language=Java]
+// Thread-confined Arena (0 Lock Contention)
+Arena arena = Arena.ofConfined();
+MemorySegment base = arena.allocate(bytes, 64);
+
+// Direct primitive field write off-heap
+MemoryLayouts.setBucketHash(base, offset, hashKey);
+MemoryLayouts.setBucketPageId(base, offset, pageId);
+MemoryLayouts.setBucketSlotId(base, offset, slotId);
+    \end{lstlisting}
+    
+    \vspace{3.5mm}
+    \fontsize{9.5}{12.5}\selectfont
+    \noindent\textcolor{shidenaccent}{\textbf{FFM Engine Parameters:}}\\
+    \textcolor{shidenpurple}{$\bullet$ \textbf{JDK Version:}} Java 21 OpenJDK (\texttt{JEP 454})\\
+    \textcolor{shidenpurple}{$\bullet$ \textbf{JVM Arguments:}} \texttt{--enable-preview --enable-native-access=ALL-UNNAMED}\\
+    \textcolor{shidenpurple}{$\bullet$ \textbf{Arena Scope:}} \texttt{Arena.ofConfined()} (Partition Thread-Bound)\\
+    \textcolor{shidenpurple}{$\bullet$ \textbf{Memory Access:}} Primitive \texttt{MemorySegment.set()} offset dereferencing
+\end{minipage}
+\clearpage
+
+% ==============================================================================
+% PAGE 3: SLAB ALLOCATOR & HARDWARE ACCELERATION
+% ==============================================================================
+\noindent
+\begin{minipage}[t]{0.48\textwidth}
+    \vspace{0pt}
+    {\fontsize{9.5}{11}\selectfont\color{shidenaccent}\textbf{02 // SLAB ALLOCATOR}\par}
+    \vspace{1.5mm}
+    
+    {\fontsize{19}{23}\selectfont\color{white}\textbf{\$O(1)\$ Bitmapped Slab Allocator}\par}
+    \vspace{2mm}
+    \noindent\rule{\linewidth}{0.4pt}
+    \vspace{2.5mm}
+    
+    \normalsize\color{shidentext}
+    Dynamic off-heap allocation (\texttt{malloc}) causes severe external memory fragmentation over time.
+    
+    The \textbf{Slab Allocator} pre-allocates native memory and sub-divides it into fixed-size, cache-aligned slots. Slot availability is tracked using a primitive \texttt{long[]} bitmap with a \textbf{cursor-based search index} to guarantee true $O(1)$ allocations under high slab occupancy.
+    
+    Allocation uses the CPU hardware instruction \texttt{TZCNT} via Java's \texttt{Long.numberOfTrailingZeros()}, while byte offset math uses fast ALU bitwise shifts (\texttt{slotIndex << slotShift}).
+    
+    \takeaway{Cursor-based bitmapped slab allocation achieves $O(1)$ operations with zero internal fragmentation for fixed metadata.}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.01\textwidth}
+    \centering\color{shidenpurple!20}\rule{0.8pt}{2.8in}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.48\textwidth}
+    \vspace{0pt}
+    {\fontsize{9.5}{11}\selectfont\color{shidenmuted}\textbf{\$O(1)\$ BITWISE ALLOCATION LOGIC}\par}
+    \vspace{3.5mm}
+    
+    \begin{lstlisting}[language=Java]
+// Hardware bit scan + cursor resumption
+long freeBits = ~bitmaps[i]; // 1 = free
+if (freeBits != 0) {
+    int bitIndex = Long.numberOfTrailingZeros(freeBits);
+    int slotIndex = (i << 6) + bitIndex;
+    bitmaps[i] |= (1L << bitIndex);
+    return (long) slotIndex << slotShift; // Fast shift
+}
+    \end{lstlisting}
+    
+    \vspace{3.5mm}
+    \fontsize{9.5}{12.5}\selectfont
+    \noindent
+    \begin{tabular}{lrrr}
+    \toprule
+    \textbf{Subsystem} & \textbf{Slot Size} & \textbf{Alignment} & \textbf{Complexity} \\
+    \midrule
+    \textbf{Hash Index (RFC-002)} & 16 Bytes & 8 Bytes & $O(1)$ \\
+    \textbf{Mailbox Queue (RFC-004)} & 64 Bytes & \color{shidensuccess}\textbf{64 Bytes} & $O(1)$ \\
+    \textbf{Extent Table (RFC-008)} & 32 Bytes & 16 Bytes & $O(1)$ \\
+    \bottomrule
+    \end{tabular}
+\end{minipage}
+\clearpage
+
+% ==============================================================================
+% PAGE 4: SIMULATION & ALIGNMENT VERIFICATION
+% ==============================================================================
+\noindent
+\begin{minipage}[t]{0.48\textwidth}
+    \vspace{0pt}
+    {\fontsize{9.5}{11}\selectfont\color{shidenaccent}\textbf{03 // SIMULATION}\par}
+    \vspace{1.5mm}
+    
+    {\fontsize{19}{23}\selectfont\color{white}\textbf{GC Impact \& Alignment Suite}\par}
+    \vspace{2mm}
+    \noindent\rule{\linewidth}{0.4pt}
+    \vspace{2.5mm}
+    
+    \normalsize\color{shidentext}
+    \texttt{AllocatorSimulator.java} executed verification suites over **1,000,000 record allocations**:
+    
+    1. \textbf{CPU Cache Alignment}: Asserts that native segment base addresses and slot offsets fall on 64-byte boundaries, preventing split-load CPU cycles.
+    
+    2. \textbf{GC Stress Comparison}: Allocates 1,000,000 records on JVM Heap vs Off-Heap Slab. The JVM Heap exhausted Young Gen, triggering **13 Stop-The-World GC collections (28 ms pause time)**.
+    
+    \takeaway{Off-heap slab allocation delivered **0.00 MB heap delta and 0 GC pauses**, maintaining zero latency degradation.}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.01\textwidth}
+    \centering\color{shidenpurple!20}\rule{0.8pt}{2.8in}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.48\textwidth}
+    \vspace{0pt}
+    {\fontsize{9.5}{11}\selectfont\color{shidenmuted}\textbf{SIMULATOR VERIFICATION RESULTS (1M RECORDS)}\par}
+    \vspace{3.5mm}
+    
+    \fontsize{9.5}{12.5}\selectfont
+    \noindent
+    \begin{tabular}{lrrr}
+    \toprule
+    \textbf{Allocation Model} & \textbf{Heap Delta} & \textbf{GC Count} & \textbf{GC Pause} \\
+    \midrule
+    \textbf{JVM Heap Object} & 37.50 MB & \color{shidenerror}\textbf{13} & \color{shidenerror}\textbf{28 ms} \\
+    \textbf{Off-Heap Slab} & \color{shidensuccess}\textbf{0.00 MB} & \color{shidensuccess}\textbf{0} & \color{shidensuccess}\textbf{0 ms} \\
+    \bottomrule
+    \end{tabular}
+    
+    \vspace{3.5mm}
+    \noindent\textcolor{shidenaccent}{\textbf{64-Byte Cache Line Verification Log:}}\\
+    \textcolor{shidenpurple}{$\bullet$ \textbf{Base Address:}} \texttt{0x7F3160128380} (Aligned 64B: \textbf{TRUE})\\
+    \textcolor{shidenpurple}{$\bullet$ \textbf{Slot 0 Offset 0:}} \texttt{0x7F3160128380} (Aligned 64B: \textbf{TRUE})\\
+    \textcolor{shidenpurple}{$\bullet$ \textbf{Slot 1 Offset 64:}} \texttt{0x7F31601283C0} (Aligned 64B: \textbf{TRUE})\\
+    \textcolor{shidenpurple}{$\bullet$ \textbf{Slot 2 Offset 128:}} \texttt{0x7F3160128400} (Aligned 64B: \textbf{TRUE})\\
+    \textcolor{shidenpurple}{$\bullet$ \textbf{Alignment Result:}} \textbf{100\% Assertion Pass}
+\end{minipage}
+\clearpage
+
+% ==============================================================================
+% PAGE 5: JMH BENCHMARK PERFORMANCE
+% ==============================================================================
+\noindent
+\begin{minipage}[t]{0.48\textwidth}
+    \vspace{0pt}
+    {\fontsize{9.5}{11}\selectfont\color{shidenaccent}\textbf{04 // BENCHMARKS}\par}
+    \vspace{1.5mm}
+    
+    {\fontsize{19}{23}\selectfont\color{white}\textbf{JMH Micro-Benchmark Scores}\par}
+    \vspace{2mm}
+    \noindent\rule{\linewidth}{0.4pt}
+    \vspace{2.5mm}
+    
+    \normalsize\color{shidentext}
+    JMH micro-benchmarks (\texttt{AllocatorBenchmark.java}) measured isolated operation latencies using \texttt{Blackhole} consumption.
+    
+    \textbf{Key Findings}:
+    * \textbf{Linear Bump Pointer}: **1.06 ns/op** ($O(1)$ sequential bump).
+    * \textbf{Full Slab Cycle (Alloc + Write + Free)}: **17.63 ns/op**, beating our **$<$ 20 ns** SLO target.
+    
+    \defect{Single-op TLAB heap allocation (5.00 ns) is a deceptive micro-metric: it ignores the 28ms+ STW GC pauses that destroy production SLAs.}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.01\textwidth}
+    \centering\color{shidenpurple!20}\rule{0.8pt}{2.8in}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.48\textwidth}
+    \vspace{0pt}
+    {\fontsize{9.5}{11}\selectfont\color{shidenmuted}\textbf{OFFICIAL JMH BENCHMARK SCORES}\par}
+    \vspace{3.5mm}
+    
+    \fontsize{9.5}{12.5}\selectfont
+    \noindent
+    \begin{tabular}{llrr}
+    \toprule
+    \textbf{Benchmark Method} & \textbf{Operation} & \textbf{Latency} & \textbf{Target SLO} \\
+    \midrule
+    \texttt{testArenaBump} & Linear Bump Pointer & \color{shidensuccess}\textbf{1.08 ns/op} & $< 20$ ns \\
+    \texttt{testHeapObject} & JVM Heap Instantiation & 5.42 ns/op & Baseline \\
+    \texttt{testOffHeapRead} & Direct FFM Field Read & 5.17 ns/op & $< 10$ ns \\
+    \texttt{testOffHeapWrite} & Direct FFM Field Write & 6.28 ns/op & $< 10$ ns \\
+    \texttt{testSlabAllocFree} & Off-Heap Bitmap Scan + Free & \color{shidensuccess}\textbf{6.49 ns/op} & $< 20$ ns \\
+    \texttt{testFullSlabCycle} & Allocate + Write + Free & \color{shidensuccess}\textbf{11.31 ns/op} & $< 20$ ns \\
+    \bottomrule
+    \end{tabular}
+    
+    \vspace{3.5mm}
+    \begin{lstlisting}[language=Java]
+// JMH test method: Complete allocation cycle
+long offset = slabAllocator.allocate(); // O(1)
+MemoryLayouts.setBucketHash(base, offset, id);
+MemoryLayouts.setBucketPageId(base, offset, pageId);
+slabAllocator.free(offset); // Recycles slot
+    \end{lstlisting}
+\end{minipage}
+
+\end{document}

@@ -7,7 +7,7 @@ High-performance storage engines cannot rely on the standard JVM garbage-collect
 ## 🧠 Concepts Required
 
 1. **Foreign Function & Memory (FFM) API (JEP 442/454)**:
-   - **`Arena`**: Controls the lifecycle of native memory segments. Confined arenas (`ofConfined()`) are bound to a single thread; shared arenas (`ofShared()`) allow multi-threaded access.
+   - **`Arena`**: Controls the lifecycle of native memory segments. Confined arenas (`ofConfined()`) are bound to a single thread; shared arenas (`ofShared()`) allow multi-threaded access. Because Shiden assigns each partition to a dedicated owner thread (Partition Ownership Model), PoC-02 strictly uses `Arena.ofConfined()`. This eliminates JVM thread-synchronization checks during pointer dereferencing while guaranteeing zero lock contention.
    - **`MemorySegment`**: Represents a contiguous region of memory (off-heap or heap).
    - **`MemoryLayout` / `VarHandle`**: Provides structured, type-safe access to memory offsets without manual byte-offset calculations, compiling down to raw pointer dereferencing.
 
@@ -42,6 +42,27 @@ To ensure memory safety and prevent race conditions without locks, PoC 2 adheres
 * **Immutable Snapshots**: Cross-thread transfers (e.g., for persistence or replication) happen strictly through immutable snapshots.
 * **Detached Segment Hand-off**: The background persistence/IO thread receives detached segments, preventing concurrent access and protecting confined memory lifecycle rules.
 * **Lifetime Alignment**: The lifetime of the Arena is strictly tied to the lifetime of its owner Partition.
+
+---
+
+## 🌐 Integration Context: Role of PoC-02 in Shiden
+
+To understand why PoC-02 focuses on the Slab Allocator and FFM API, it is essential to see where this component lives inside Shiden's overall architecture:
+
+### 1. What PoC-02 Directly Powers in Shiden (Fixed Metadata)
+The **Slab Allocator** validated in PoC-02 is the low-level, sub-20ns allocator used for fixed-size internal engine structures. Each partition owner thread instantiates multiple specialized `SlabAllocator` instances tailored for specific subsystems:
+* **RFC-002 (Off-Heap Hash Index)**: Configured with 16-byte slots (`slotSize=16, align=8`) to store index bucket entries mapping `Hash -> (PageID, SlotID)`.
+* **RFC-003/004 (Execution & Messaging Layer)**: Configured with 64-byte slots (`slotSize=64, align=64`) for cache-line-aligned RingBuffer/Mailbox nodes for zero-copy message passing between event loops.
+* **RFC-008 (Allocator Metadata)**: Configured with 32-byte slots (`slotSize=32, align=16`) for Extent Descriptors in the Page Allocator's free-list tables.
+
+### 2. Why `Arena.ofConfined()` is Used (Zero-Lock Thread-Per-Partition)
+Since each partition is strictly owned by a single execution thread, each partition thread owns its own `Arena.ofConfined()`. There is no need to test `Arena.ofShared()` for hot-path allocations because no two threads ever contend for the same partition slab.
+
+### 3. How it Interacts with the Slotted-Page Engine (Client Data)
+* **PoC-02 (Slab Allocator)**: Handles **internal metadata** (fixed size, $O(1)$ bitmap lookup, sub-20ns speed, zero internal fragmentation).
+* **RFC-001 (Slotted Storage Engine)**: Handles **client payloads** (variable size, packed into 4KB pages with 2-byte slot directories, compacted incrementally).
+
+Together, they form Shiden's complete GC-free off-heap memory architecture.
 
 ---
 
