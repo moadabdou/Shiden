@@ -5,14 +5,14 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 
 /**
- * Ultra-Low Latency, Thread-Confined $O(1)$ Off-Heap Fixed-Size Slab Allocator.
+ * Thread-Confined $O(1)$ Off-Heap Fixed-Size Slab Allocator.
  * <p>
  * Designed for fixed-size metadata structures (Hash Index buckets, Mailbox nodes, Extent descriptors).
- * Features hardware-optimized memory management:
+ * Features simple, clean memory management:
  * <ul>
  *   <li><b>100% Off-Heap Bitmaps</b>: Allocator bitmaps reside off-heap in 64-byte cache-aligned native memory, eliminating JVM Heap false sharing.</li>
- *   <li><b>Single-Cycle Bitwise Masking</b>: Bitmap size is padded to the next power-of-two, replacing expensive CPU modulo ({@code %}) with a 1-cycle bitwise AND mask ({@code &}).</li>
- *   <li><b>ALU Bitshift Offset Calculation</b>: Slot offsets use bitwise left-shifts ({@code << slotShift}) instead of ALU multiplication instructions.</li>
+ *   <li><b>Cursor-Based Wrapping</b>: Simple branch-based cursor wrap-around ({@code if (++i == numWords) i = 0}) guaranteeing 100% correct slot traversal without padding hacks.</li>
+ *   <li><b>ALU Bitshift Offset Calculation</b>: Slot offsets use bitwise left-shifts ({@code << slotShift}) for power-of-two slot sizes.</li>
  *   <li><b>Hardware Bit Scan Intrinsics</b>: Uses {@link Long#numberOfTrailingZeros(long)} ({@code TZCNT}) for single-cycle slot discovery.</li>
  * </ul>
  * </p>
@@ -25,10 +25,9 @@ public class SlabAllocator implements AutoCloseable {
     private final int slotSize;
     private final int totalSlots;
     private final long alignment;
-    private final int slotShift;     // Shift offset for power-of-2 slot sizes (16 -> 4, 32 -> 5, 64 -> 6)
-    private final int numWords;      // Total bitmap words
-    private final int bitmapsMask;   // Power-of-two bitwise mask (numWordsPowerOfTwo - 1)
-    
+    private final int numWords;
+    private final int slotShift;       // Shift offset for power-of-2 slot sizes (16 -> 4, 32 -> 5, 64 -> 6)
+
     private int freeSlotsCount;
     private int lastAllocatedWordIndex = 0; // Cursor to prevent O(N) scanning on full slabs
 
@@ -53,39 +52,33 @@ public class SlabAllocator implements AutoCloseable {
         this.alignment = alignment;
         this.freeSlotsCount = totalSlots;
 
-        // 1. Calculate power-of-2 bit shift for slot size (e.g. 16B -> shift 4)
+        // Bit shift for power-of-two slot sizes
         if ((slotSize & (slotSize - 1)) == 0) {
             this.slotShift = Integer.numberOfTrailingZeros(slotSize);
         } else {
             this.slotShift = -1; // Fallback to multiplication
         }
 
-        // 2. Pad bitmap size to next power-of-two for 1-cycle bitwise AND masking
-        int minLongs = (totalSlots + 63) / 64;
-        int powerOfTwoLongs = (minLongs <= 1) ? 1 : Integer.highestOneBit(minLongs - 1) << 1;
-        this.numWords = minLongs;
-        this.bitmapsMask = powerOfTwoLongs - 1;
+        this.numWords = (totalSlots + 63) / 64;
 
-        // 3. Allocate off-heap bitmaps segment aligned to 64-byte CPU cache line (0 JVM Heap footprint)
-        long bitmapBytes = (long) powerOfTwoLongs * 8L;
+        // Allocate 64-byte cache-line aligned off-heap segment for bitmaps
+        long bitmapBytes = (long) numWords * 8L;
         this.bitmapsSegment = arena.allocate(bitmapBytes, 64);
 
-        // 4. Allocate base payload off-heap segment
+        // Allocate off-heap payload segment respecting requested alignment
         long totalBytes = (long) totalSlots * slotSize;
-        long allocAlignment = Math.max(alignment, 64);
-        this.baseSegment = arena.allocate(totalBytes, allocAlignment);
+        this.baseSegment = arena.allocate(totalBytes, alignment);
     }
 
     /**
-     * Creates a SlabAllocator with 16-byte default alignment.
+     * Creates a SlabAllocator with 64-byte CPU cache-line default alignment.
      */
     public SlabAllocator(int totalSlots, int slotSize) {
-        this(totalSlots, slotSize, 16);
+        this(totalSlots, slotSize, 64);
     }
 
     /**
      * Allocates a slot and returns its raw byte offset within the base segment.
-     * Guarantees single-digit nanosecond $O(1)$ performance.
      *
      * @return Raw byte offset within the base segment.
      * @throws OutOfMemoryError if no free slots are available.
@@ -95,13 +88,9 @@ public class SlabAllocator implements AutoCloseable {
             throw new OutOfMemoryError("SlabAllocator out of free slots! Capacity: " + totalSlots);
         }
 
-        int mask = bitmapsMask;
-        int startWord = lastAllocatedWordIndex;
-        int maxSteps = numWords;
+        int i = lastAllocatedWordIndex;
 
-        // Single-cycle bitwise AND mask wrapping ((startWord + step) & mask)
-        for (int step = 0; step < maxSteps; step++) {
-            int i = (startWord + step) & mask;
+        for (int step = 0; step < numWords; step++) {
             long wordOffset = (long) i << 3; // i * 8 bytes
             long word = bitmapsSegment.get(ValueLayout.JAVA_LONG, wordOffset);
             long freeBits = ~word; // Invert: 1s represent free slots
@@ -115,16 +104,22 @@ public class SlabAllocator implements AutoCloseable {
                     bitmapsSegment.set(ValueLayout.JAVA_LONG, wordOffset, updatedWord);
                     freeSlotsCount--;
 
-                    // Advance cursor
+                    // Advance cursor cleanly
                     if (updatedWord == -1L) {
-                        lastAllocatedWordIndex = (i + 1) & mask;
+                        int next = i + 1;
+                        lastAllocatedWordIndex = (next == numWords) ? 0 : next;
                     } else {
                         lastAllocatedWordIndex = i;
                     }
 
-                    // Compute offset via fast ALU bitshift
+                    // Compute offset via fast ALU bitshift or multiplication
                     return (slotShift != -1) ? ((long) slotIndex << slotShift) : ((long) slotIndex * slotSize);
                 }
+            }
+
+            // Simple, clean wrap-around
+            if (++i == numWords) {
+                i = 0;
             }
         }
 
