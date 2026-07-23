@@ -12,6 +12,7 @@ This Proof of Concept (PoC) implements Shiden's high-performance, zero-GC off-he
 * `report/`:
   - `implementation_details.md`: Comprehensive breakdown of core code, file roles, benchmarks, and verification suites.
   - `ffm_vs_unsafe_comparison.md`: Side-by-side technical comparison between Safe FFM and Unsafe fast path.
+  - `monolithic_vs_sharded_comparison.md`: Side-by-side technical comparison between Monolithic Flat Table and Contiguous Sharded Index.
   - `benchmark_results.md`: Complete performance benchmark report, empirical metrics, and mathematical correctness proofs.
 * `src/main/java/shiden/poc/hashindex/`:
   - `XxHash3.java`: MurmurHash3 64-bit avalanche hash generator and 16-bit fingerprint extractor.

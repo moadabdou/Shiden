@@ -1,15 +1,18 @@
 package shiden.poc.hashindex;
 
+import sun.misc.Unsafe;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
+import java.lang.reflect.Field;
 
 /**
- * 100% Pointer-Free Contiguous L2-Cache-Confined Sharded Off-Heap Hash Index (100% Collision-Proof).
+ * 100% Pointer-Free Contiguous L2-Cache-Confined Sharded Off-Heap Hash Index (Unsafe Fast-Path).
  * <p>
  * Implements Shiden RFC-002 Key-to-Record Index Resolution Engine across L2-cache-confined sub-table shards:
  * <ul>
  *   <li><b>0 Java Pointers & Objects</b>: Lays out all sub-table shards contiguously in a single off-heap native {@link MemorySegment}.</li>
+ *   <li><b>1-Cycle Direct Address Dereferencing</b>: Accesses memory directly via <code>UNSAFE.getLong(rawAddress + offset)</code>,
+ *       bypassing FFM scope and boundary check wrappers on production hot paths.</li>
  *   <li><b>16-Byte Compact Aligned Bucket Layout</b>:
  *       <code>[ Page ID (4B @ 0) | Slot ID (2B @ 4) | Fingerprint (2B @ 6) | Distance (2B @ 8) | Frequency (2B @ 10) | HashUpper (4B @ 12) ]</code></li>
  *   <li><b>48-Bit Hash Matching Guarantee</b>: Combines 16-bit fingerprint + 32-bit HashUpper to eliminate false collision matches.</li>
@@ -18,10 +21,23 @@ import java.lang.foreign.ValueLayout;
  *   <li><b>Early Exit Lookups</b>: Aborts lookups early when candidate bucket PSL is less than current search PSL.</li>
  *   <li><b>Zero-Tombstone Backward-Shift Deletion</b>: Compacts probe clusters backward on delete within shard boundaries to prevent tombstone poisoning.</li>
  *   <li><b>L2 Cache Localized Routing</b>: Maps keys to contiguous shards using high 64-bit hash bits (<code>(hash >>> shardShift) & shardMask</code>).</li>
+ *   <li><b>Software Hardware Prefetching</b>: Speculatively loads bucket cache lines into L1 cache for batch mailbox pipelines (RFC-003).</li>
  * </ul>
  * </p>
  */
 public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
+
+    private static final Unsafe UNSAFE;
+
+    static {
+        try {
+            Field f = Unsafe.class.getDeclaredField("theUnsafe");
+            f.setAccessible(true);
+            UNSAFE = (Unsafe) f.get(null);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to access sun.misc.Unsafe", e);
+        }
+    }
 
     public static final short EMPTY_DISTANCE = (short) -1;
     public static final int BUCKET_SIZE_BYTES = 16;
@@ -37,8 +53,11 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
     public static final long FREQUENCY_OFFSET = 10;
     public static final long HASH_UPPER_OFFSET = 12;
 
+    public static final int DEFAULT_PREFETCH_LOOKAHEAD = 4;
+
     private final Arena arena;
     private final MemorySegment segment;
+    private final long rawAddress;
     private final int totalCapacity;
     private final int numShards;
     private final int shardMask;
@@ -57,7 +76,7 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
     private long fingerprintRejections = 0;
 
     /**
-     * Constructs a new ContiguousShardedOffHeapHashIndex with specified total capacity and shard count.
+     * Constructs a new ContiguousShardedOffHeapHashIndex with specified total capacity and shard count via Unsafe Fast-Path.
      *
      * @param totalCapacity power-of-2 total bucket capacity across all shards
      * @param numShards power-of-2 number of sub-table shards
@@ -86,22 +105,23 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
         this.arena = Arena.ofConfined();
         long totalBytes = (long) totalCapacity * BUCKET_SIZE_BYTES;
         this.segment = arena.allocate(totalBytes, 64);
+        this.rawAddress = segment.address();
 
         clearTable();
     }
 
     /**
-     * Resets all off-heap bucket distance fields to EMPTY_DISTANCE (0xFFFF).
+     * Resets all off-heap bucket distance fields to EMPTY_DISTANCE (0xFFFF) via Unsafe.
      */
     private void clearTable() {
         for (int i = 0; i < totalCapacity; i++) {
             long offset = (long) i << BUCKET_SHIFT;
-            segment.set(ValueLayout.JAVA_SHORT, offset + DISTANCE_OFFSET, EMPTY_DISTANCE);
+            UNSAFE.putShort(rawAddress + offset + DISTANCE_OFFSET, EMPTY_DISTANCE);
         }
     }
 
     /**
-     * Inserts or updates a key-to-record mapping in the target shard using the Robin Hood hash invariant.
+     * Inserts or updates a key-to-record mapping in the target shard using the Robin Hood hash invariant via Unsafe.
      *
      * @param key 64-bit primitive key
      * @param pageId 32-bit data page ID
@@ -131,8 +151,9 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
 
         for (int step = 0; step < shardCapacity; step++) {
             long bOffset = shardBaseOffset + ((long) currIndex << BUCKET_SHIFT);
+            long bAddress = rawAddress + bOffset;
 
-            long word1 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET);
+            long word1 = UNSAFE.getLong(bAddress + WORD1_OFFSET);
             short currDistance = (short) word1;
 
             // 1. Found an empty slot
@@ -143,8 +164,8 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
                 long newWord1 = (incomingDistance & 0xFFFFL) |
                                (((long) incomingHashUpper) << 32);
 
-                segment.set(ValueLayout.JAVA_LONG, bOffset + WORD0_OFFSET, word0);
-                segment.set(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET, newWord1);
+                UNSAFE.putLong(bAddress + WORD0_OFFSET, word0);
+                UNSAFE.putLong(bAddress + WORD1_OFFSET, newWord1);
 
                 size++;
                 if (incomingDistance > maxProbeLength) {
@@ -153,7 +174,7 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
                 return true;
             }
 
-            long word0 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD0_OFFSET);
+            long word0 = UNSAFE.getLong(bAddress + WORD0_OFFSET);
             short currFingerprint = (short) (word0 >>> 48);
             int currHashUpper = (int) (word1 >>> 32);
 
@@ -163,7 +184,7 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
                 long updatedWord0 = (incomingPageId & 0xFFFFFFFFL) |
                                    ((incomingSlotId & 0xFFFFL) << 32) |
                                    ((incomingFingerprint & 0xFFFFL) << 48);
-                segment.set(ValueLayout.JAVA_LONG, bOffset + WORD0_OFFSET, updatedWord0);
+                UNSAFE.putLong(bAddress + WORD0_OFFSET, updatedWord0);
                 return true;
             }
 
@@ -175,8 +196,8 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
                 long newWord1 = (incomingDistance & 0xFFFFL) |
                                (((long) incomingHashUpper) << 32);
 
-                segment.set(ValueLayout.JAVA_LONG, bOffset + WORD0_OFFSET, newWord0);
-                segment.set(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET, newWord1);
+                UNSAFE.putLong(bAddress + WORD0_OFFSET, newWord0);
+                UNSAFE.putLong(bAddress + WORD1_OFFSET, newWord1);
 
                 incomingDistance = currDistance;
                 incomingFingerprint = currFingerprint;
@@ -193,7 +214,7 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
     }
 
     /**
-     * Looks up a 64-bit key in its target shard and returns the combined off-heap payload.
+     * Looks up a 64-bit key in its target shard and returns the combined off-heap payload via Unsafe (hot path).
      *
      * @param key 64-bit key
      * @return encoded long payload containing pageId (high 32 bits) and slotId (low 16 bits), or -1L if not found
@@ -209,15 +230,16 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
 
         for (int step = 0; step < shardCapacity; step++) {
             long bOffset = shardBaseOffset + ((long) currIndex << BUCKET_SHIFT);
+            long bAddress = rawAddress + bOffset;
 
-            long word1 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET);
+            long word1 = UNSAFE.getLong(bAddress + WORD1_OFFSET);
             short currDistance = (short) word1;
 
             if (currDistance == EMPTY_DISTANCE || currDistance < probeDistance) {
                 return -1L;
             }
 
-            long word0 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD0_OFFSET);
+            long word0 = UNSAFE.getLong(bAddress + WORD0_OFFSET);
             short currFingerprint = (short) (word0 >>> 48);
             int currHashUpper = (int) (word1 >>> 32);
 
@@ -253,15 +275,16 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
         for (int step = 0; step < shardCapacity; step++) {
             totalProbes++;
             long bOffset = shardBaseOffset + ((long) currIndex << BUCKET_SHIFT);
+            long bAddress = rawAddress + bOffset;
 
-            long word1 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET);
+            long word1 = UNSAFE.getLong(bAddress + WORD1_OFFSET);
             short currDistance = (short) word1;
 
             if (currDistance == EMPTY_DISTANCE || currDistance < probeDistance) {
                 return -1L;
             }
 
-            long word0 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD0_OFFSET);
+            long word0 = UNSAFE.getLong(bAddress + WORD0_OFFSET);
             short currFingerprint = (short) (word0 >>> 48);
             int currHashUpper = (int) (word1 >>> 32);
             fingerprintEvaluations++;
@@ -282,7 +305,42 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
     }
 
     /**
-     * Removes a key using Zero-Tombstone Backward-Shift Cluster Compaction within shard boundaries.
+     * Executes a batch lookup with default 4-step software prefetching into L1 Data Cache across sub-shards.
+     *
+     * @param keys array of input keys
+     * @param resultsOut output array for payloads
+     * @param count number of keys to process
+     */
+    public void getBatch(long[] keys, long[] resultsOut, int count) {
+        getBatch(keys, resultsOut, count, DEFAULT_PREFETCH_LOOKAHEAD);
+    }
+
+    /**
+     * Executes a batch lookup with configurable software hardware prefetching into L1 Data Cache across sub-shards.
+     *
+     * @param keys array of input keys
+     * @param resultsOut output array for payloads
+     * @param count number of keys to process
+     * @param prefetchLookahead lookahead distance (e.g. 4 for L2/L3 cache, 16 for cold DRAM)
+     */
+    public void getBatch(long[] keys, long[] resultsOut, int count, int prefetchLookahead) {
+        for (int i = 0; i < count; i++) {
+            int prefetchIdx = i + prefetchLookahead;
+            if (prefetchIdx < count) {
+                long pHash = XxHash3.hash64(keys[prefetchIdx]);
+                int pShardIdx = (int) ((pHash >>> shardShift) & shardMask);
+                long pShardBaseOffset = pShardIdx * shardSizeBytes;
+                int pBucket = (int) (pHash & shardCapacityMask);
+                long pAddress = rawAddress + pShardBaseOffset + ((long) pBucket << BUCKET_SHIFT);
+                // Speculative read of distance/frequency word to pull 64-byte cache line into L1 cache
+                UNSAFE.getShort(pAddress + WORD1_OFFSET);
+            }
+            resultsOut[i] = get(keys[i]);
+        }
+    }
+
+    /**
+     * Removes a key using Zero-Tombstone Backward-Shift Cluster Compaction within shard boundaries via Unsafe.
      *
      * @param key 64-bit key to delete
      * @return true if key was found and deleted; false otherwise
@@ -302,15 +360,16 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
 
         for (int step = 0; step < shardCapacity; step++) {
             long bOffset = shardBaseOffset + ((long) currIndex << BUCKET_SHIFT);
+            long bAddress = rawAddress + bOffset;
 
-            long word1 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET);
+            long word1 = UNSAFE.getLong(bAddress + WORD1_OFFSET);
             short currDistance = (short) word1;
 
             if (currDistance == EMPTY_DISTANCE || currDistance < probeDistance) {
                 return false;
             }
 
-            long word0 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD0_OFFSET);
+            long word0 = UNSAFE.getLong(bAddress + WORD0_OFFSET);
             short currFingerprint = (short) (word0 >>> 48);
             int currHashUpper = (int) (word1 >>> 32);
 
@@ -332,22 +391,24 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
         while (true) {
             int nextIndex = (currIndex + 1) & shardCapacityMask;
             long nextOffset = shardBaseOffset + ((long) nextIndex << BUCKET_SHIFT);
+            long nextAddress = rawAddress + nextOffset;
 
-            long nextWord1 = segment.get(ValueLayout.JAVA_LONG, nextOffset + WORD1_OFFSET);
+            long nextWord1 = UNSAFE.getLong(nextAddress + WORD1_OFFSET);
             short nextDistance = (short) nextWord1;
 
             if (nextDistance == EMPTY_DISTANCE || nextDistance == 0) {
                 long currOffset = shardBaseOffset + ((long) currIndex << BUCKET_SHIFT);
-                segment.set(ValueLayout.JAVA_SHORT, currOffset + DISTANCE_OFFSET, EMPTY_DISTANCE);
+                UNSAFE.putShort(rawAddress + currOffset + DISTANCE_OFFSET, EMPTY_DISTANCE);
                 break;
             }
 
             long currOffset = shardBaseOffset + ((long) currIndex << BUCKET_SHIFT);
-            long nextWord0 = segment.get(ValueLayout.JAVA_LONG, nextOffset + WORD0_OFFSET);
+            long currAddress = rawAddress + currOffset;
+            long nextWord0 = UNSAFE.getLong(nextAddress + WORD0_OFFSET);
             long shiftedWord1 = ((nextDistance - 1) & 0xFFFFL) | (nextWord1 & 0xFFFF_FFFF_FFFF_0000L);
 
-            segment.set(ValueLayout.JAVA_LONG, currOffset + WORD0_OFFSET, nextWord0);
-            segment.set(ValueLayout.JAVA_LONG, currOffset + WORD1_OFFSET, shiftedWord1);
+            UNSAFE.putLong(currAddress + WORD0_OFFSET, nextWord0);
+            UNSAFE.putLong(currAddress + WORD1_OFFSET, shiftedWord1);
 
             currIndex = nextIndex;
         }
