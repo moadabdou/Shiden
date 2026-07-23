@@ -120,11 +120,8 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
             int currHashUpper = (int) (word1 >>> 32);
 
             // 2. Duplicate record update check
-            if (currDistance == incomingDistance &&
-                currFingerprint == incomingFingerprint &&
-                currHashUpper == incomingHashUpper &&
-                currPageId == incomingPageId &&
-                currSlotId == incomingSlotId) {
+            if (currFingerprint == incomingFingerprint &&
+                currHashUpper == incomingHashUpper) {
                 long updatedWord0 = (incomingPageId & 0xFFFFFFFFL) |
                                    ((incomingSlotId & 0xFFFFL) << 32) |
                                    ((incomingFingerprint & 0xFFFFL) << 48);

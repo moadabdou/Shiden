@@ -9,14 +9,19 @@ import java.util.Random;
  * <p>
  * Proves 100% System Correctness via 4 Mathematical Verification Protocols:
  * <ol>
- *   <li><b>Reference Fuzz Protocol (1,000,000 Random Ops vs java.util.HashMap)</b>:
- *       Asserts exact behavioral equivalence across continuous random PUT, GET, DELETE, and UPDATE operations.</li>
- *   <li><b>Robin Hood PSL Monotonicity Invariant Audit</b>:
- *       Scans off-heap memory to prove every bucket's stored PSL matches its exact ideal index distance.</li>
- *   <li><b>Zero-Tombstone Cluster Compactness Proof</b>:
- *       Proves that backward-shift deletion leaves 0 orphaned keys and 0 tombstones in active probe clusters.</li>
- *   <li><b>Incremental Rehashing Data Linearizability Proof</b>:
- *       Proves 100% read linearizability (0 missing or stale keys) during live T0 -> T1 cluster migration.</li>
+ * <li><b>Reference Fuzz Protocol (1,000,000 Random Ops vs
+ * java.util.HashMap)</b>:
+ * Asserts exact behavioral equivalence across continuous random PUT, GET,
+ * DELETE, and UPDATE operations.</li>
+ * <li><b>Robin Hood PSL Monotonicity Invariant Audit</b>:
+ * Scans off-heap memory to prove every bucket's stored PSL matches its exact
+ * ideal index distance.</li>
+ * <li><b>Zero-Tombstone Cluster Compactness Proof</b>:
+ * Proves that backward-shift deletion leaves 0 orphaned keys and 0 tombstones
+ * in active probe clusters.</li>
+ * <li><b>Incremental Rehashing Data Linearizability Proof</b>:
+ * Proves 100% read linearizability (0 missing or stale keys) during live T0 ->
+ * T1 cluster migration.</li>
  * </ol>
  * </p>
  */
@@ -38,7 +43,8 @@ public class HashIndexCorrectnessTest {
     }
 
     /**
-     * Protocol 1: Reference Fuzz Equivalence against java.util.HashMap (1,000,000 Ops).
+     * Protocol 1: Reference Fuzz Equivalence against java.util.HashMap (1,000,000
+     * Ops).
      */
     private static void testReferenceFuzzEquivalence() {
         System.out.println("--- 🛡️ Protocol 1: Reference Fuzz Test (1,000,000 Ops vs. Reference HashMap) ---");
@@ -81,11 +87,13 @@ public class HashIndexCorrectnessTest {
 
                         if (expected == null) {
                             if (actual != -1L) {
-                                throw new AssertionError("Fuzz Failure! Key " + key + " expected NOT FOUND, but index returned " + actual);
+                                throw new AssertionError("Fuzz Failure! Key " + key
+                                        + " expected NOT FOUND, but index returned " + actual);
                             }
                         } else {
                             if (actual != expected) {
-                                throw new AssertionError("Fuzz Failure! Key " + key + " expected " + expected + ", but index returned " + actual);
+                                throw new AssertionError("Fuzz Failure! Key " + key + " expected " + expected
+                                        + ", but index returned " + actual);
                             }
                         }
                     }
@@ -96,7 +104,8 @@ public class HashIndexCorrectnessTest {
                         Long expectedVal = referenceMap.remove(key);
 
                         if (expectedVal != null && !indexDeleted) {
-                            throw new AssertionError("Fuzz Failure! Key " + key + " existed in reference but delete() returned false!");
+                            throw new AssertionError(
+                                    "Fuzz Failure! Key " + key + " existed in reference but delete() returned false!");
                         }
                     }
                 }
@@ -104,7 +113,8 @@ public class HashIndexCorrectnessTest {
 
             // Final state integrity check
             if (index.size() != referenceMap.size()) {
-                throw new AssertionError("Fuzz Mismatch! Index size (" + index.size() + ") != Reference size (" + referenceMap.size() + ")");
+                throw new AssertionError("Fuzz Mismatch! Index size (" + index.size() + ") != Reference size ("
+                        + referenceMap.size() + ")");
             }
 
             for (Map.Entry<Long, Long> entry : referenceMap.entrySet()) {
@@ -150,7 +160,8 @@ public class HashIndexCorrectnessTest {
                 verifiedSlots++;
             }
 
-            System.out.printf("  Verified Slots: %d / %d | Monotonicity Check: 100%% Valid%n", verifiedSlots, targetEntries);
+            System.out.printf("  Verified Slots: %d / %d | Monotonicity Check: 100%% Valid%n", verifiedSlots,
+                    targetEntries);
             System.out.println("  ✅ PASSED: Robin Hood PSL Monotonicity Invariant holds across 100% of memory slots!");
         }
         System.out.println();
@@ -177,7 +188,8 @@ public class HashIndexCorrectnessTest {
                 index.delete(keys[i]);
             }
 
-            // Audit memory: assert zero tombstones exist (every non-empty slot has PSL >= 0, empty slots are EMPTY_DISTANCE)
+            // Audit memory: assert zero tombstones exist (every non-empty slot has PSL >=
+            // 0, empty slots are EMPTY_DISTANCE)
             for (int i = 0; i < capacity; i++) {
                 long bOffset = (long) i << OffHeapRobinHoodHashIndex.BUCKET_SHIFT;
                 short dist = index.segment().get(java.lang.foreign.ValueLayout.JAVA_SHORT,
@@ -197,10 +209,12 @@ public class HashIndexCorrectnessTest {
             }
 
             if (reachable != 10_000) {
-                throw new AssertionError("Cluster Compactness Error! Only " + reachable + " / 10000 remaining keys reachable.");
+                throw new AssertionError(
+                        "Cluster Compactness Error! Only " + reachable + " / 10000 remaining keys reachable.");
             }
 
-            System.out.println("  ✅ PASSED: Backward-Shift Deletion guarantees zero tombstones and 100% key reachability!");
+            System.out.println(
+                    "  ✅ PASSED: Backward-Shift Deletion guarantees zero tombstones and 100% key reachability!");
         }
         System.out.println();
     }
@@ -230,7 +244,8 @@ public class HashIndexCorrectnessTest {
                 // Verify immediate read linearizability mid-operation
                 long actual = index.get(key);
                 if (actual != val) {
-                    throw new AssertionError("Linearizability Failure during rehash! Key: " + key + ", Expected: " + val + ", Actual: " + actual);
+                    throw new AssertionError("Linearizability Failure during rehash! Key: " + key + ", Expected: " + val
+                            + ", Actual: " + actual);
                 }
             }
 
@@ -242,7 +257,8 @@ public class HashIndexCorrectnessTest {
                 }
             }
 
-            System.out.println("  ✅ PASSED: Incremental Rehashing preserves 100% data linearizability without stale or missing reads!");
+            System.out.println(
+                    "  ✅ PASSED: Incremental Rehashing preserves 100% data linearizability without stale or missing reads!");
         }
         System.out.println();
     }
