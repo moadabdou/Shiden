@@ -26,7 +26,7 @@ import java.lang.reflect.Field;
  * </ul>
  * </p>
  */
-public class UnsafeFastPathRobinHoodHashIndex implements AutoCloseable {
+public class UnsafeFastPathRobinHoodHashIndex implements ShidenHashIndex {
 
     private static final Unsafe UNSAFE;
 
@@ -112,11 +112,14 @@ public class UnsafeFastPathRobinHoodHashIndex implements AutoCloseable {
      * @return true if inserted/updated successfully; false if table is full
      */
     public boolean put(long key, int pageId, short slotId) {
+        return putByHash(XxHash3.hash64(key), pageId, slotId);
+    }
+
+    public boolean putByHash(long hash, int pageId, short slotId) {
         if (size >= capacity) {
             return false;
         }
 
-        long hash = XxHash3.hash64(key);
         short fingerprint = XxHash3.extractFingerprint(hash);
         int hashUpper = (int) (hash >>> 16);
         int idealIndex = (int) (hash & mask);
@@ -467,6 +470,19 @@ public class UnsafeFastPathRobinHoodHashIndex implements AutoCloseable {
      */
     public double fingerprintRejectionRate() {
         return fingerprintEvaluations == 0 ? 1.0 : (double) fingerprintRejections / fingerprintEvaluations;
+    }
+
+    @Override
+    public long reconstructHash(int bucketIdx, short distance, short fingerprint, int hashUpper) {
+        int idealIndex = (bucketIdx - distance) & mask;
+        return (((long) fingerprint & 0xFFFFL) << 48) |
+               (((long) hashUpper & 0xFFFFFFFFL) << 16) |
+               (idealIndex & 0xFFFFL);
+    }
+
+    @Override
+    public long rawAddress() {
+        return rawAddress;
     }
 
     /**

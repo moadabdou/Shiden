@@ -1,60 +1,112 @@
 package shiden.poc.hashindex;
 
-import java.lang.foreign.ValueLayout;
+import sun.misc.Unsafe;
+import java.lang.reflect.Field;
 
 /**
- * Dual-Table Incremental Rehashing Index Manager ($O(1)$ Migration Completion).
+ * Multi-Engine Dual-Table Incremental Rehashing Index Manager ($O(1)$ Migration Completion).
  * <p>
  * Eliminates Stop-The-World (STW) hash table resize latency spikes:
  * <ul>
- *   <li>Maintains two active tables: <code>T0</code> (current) and <code>T1</code> (resizing target).</li>
+ *   <li>Supports configurable index engine backends ({@link IndexEngineType#SAFE_FFM_MONOLITHIC},
+ *       {@link IndexEngineType#UNSAFE_FASTPATH_MONOLITHIC}, or {@link IndexEngineType#UNSAFE_CONTIGUOUS_SHARDED}).</li>
+ *   <li>Enforces a minimum capacity of 65,536 buckets (1.0 MB), ensuring 100% exact 64-bit hash reconstruction.</li>
  *   <li>Automatically triggers $2\times$ map expansion when <code>T0</code> load factor exceeds 85%.</li>
- *   <li>Levies a 1-cluster incremental migration tax on every <code>PUT</code>, <code>GET</code>, or <code>DELETE</code>.</li>
- *   <li>Uses an explicit $O(1)$ primitive counter (<code>t0RemainingEntries</code>) to finalize migration without full table scans.</li>
- *   <li>All new <code>PUT</code> operations write directly to <code>T1</code> during rehashing.</li>
- *   <li><code>GET</code> operations route to <code>T1</code> first, falling back to <code>T0</code> if absent.</li>
+ *   <li>Levies a dynamic cluster migration tax on every <code>PUT</code>, <code>GET</code>, or <code>DELETE</code>.</li>
+ *   <li>1-Cycle Direct Address Migration: <code>stepRehash()</code> dereferences native memory via <code>UNSAFE.getLong(rawAddress + bOffset)</code>
+ *       to eliminate FFM bounds/scope overhead during migration steps.</li>
  * </ul>
  * </p>
  */
 public class IncrementalRehashIndex implements AutoCloseable {
 
-    public static final double DEFAULT_REHASH_THRESHOLD = 0.85;
+    private static final Unsafe UNSAFE;
 
-    private OffHeapRobinHoodHashIndex t0;
-    private OffHeapRobinHoodHashIndex t1;
+    static {
+        try {
+            Field f = Unsafe.class.getDeclaredField("theUnsafe");
+            f.setAccessible(true);
+            UNSAFE = (Unsafe) f.get(null);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to access sun.misc.Unsafe", e);
+        }
+    }
+
+    public static final double DEFAULT_REHASH_THRESHOLD = 0.85;
+    public static final int MIN_REHASH_CAPACITY = 65_536; // 2^16 (1.0 MB)
+    public static final int DEFAULT_SHARDS = 32;
+
+    private final IndexEngineType engineType;
     private final double rehashThreshold;
+
+    private ShidenHashIndex t0;
+    private ShidenHashIndex t1;
 
     private int rehashCursor = 0;
     private int t0RemainingEntries = 0;
 
     /**
-     * Creates an IncrementalRehashIndex with initial capacity.
+     * Creates an IncrementalRehashIndex defaulting to UNSAFE_FASTPATH_MONOLITHIC engine.
      */
     public IncrementalRehashIndex(int initialCapacity) {
-        this(initialCapacity, DEFAULT_REHASH_THRESHOLD);
+        this(initialCapacity, IndexEngineType.UNSAFE_FASTPATH_MONOLITHIC, DEFAULT_REHASH_THRESHOLD);
     }
 
+    /**
+     * Creates an IncrementalRehashIndex with specified load factor threshold defaulting to UNSAFE_FASTPATH_MONOLITHIC engine.
+     */
     public IncrementalRehashIndex(int initialCapacity, double rehashThreshold) {
-        this.t0 = new OffHeapRobinHoodHashIndex(initialCapacity);
-        this.t1 = null;
+        this(initialCapacity, IndexEngineType.UNSAFE_FASTPATH_MONOLITHIC, rehashThreshold);
+    }
+
+    /**
+     * Creates an IncrementalRehashIndex with specified engine type and default load factor threshold.
+     */
+    public IncrementalRehashIndex(int initialCapacity, IndexEngineType engineType) {
+        this(initialCapacity, engineType, DEFAULT_REHASH_THRESHOLD);
+    }
+
+    /**
+     * Creates an IncrementalRehashIndex with specified engine type and load factor threshold.
+     */
+    public IncrementalRehashIndex(int initialCapacity, IndexEngineType engineType, double rehashThreshold) {
+        this.engineType = engineType;
         this.rehashThreshold = rehashThreshold;
+
+        int cap = Math.max(MIN_REHASH_CAPACITY, initialCapacity);
+        if ((cap & (cap - 1)) != 0) {
+            cap = Integer.highestOneBit(cap) << 1;
+        }
+
+        this.t0 = createEngine(engineType, cap);
+        this.t1 = null;
+    }
+
+    private static ShidenHashIndex createEngine(IndexEngineType engineType, int capacity) {
+        return switch (engineType) {
+            case SAFE_FFM_MONOLITHIC -> new OffHeapRobinHoodHashIndex(capacity);
+            case UNSAFE_FASTPATH_MONOLITHIC -> new UnsafeFastPathRobinHoodHashIndex(capacity);
+            case UNSAFE_CONTIGUOUS_SHARDED -> new ContiguousShardedOffHeapHashIndex(capacity, DEFAULT_SHARDS);
+        };
     }
 
     /**
      * Inserts or updates a key mapping.
      */
     public boolean put(long key, int pageId, short slotId) {
-        // If rehashing, write directly to T1
         if (t1 != null) {
             boolean success = t1.put(key, pageId, slotId);
             stepRehash();
+            if (t1 != null && t1.loadFactor() >= rehashThreshold) {
+                while (t1 != null && t0RemainingEntries > 0) {
+                    stepRehash();
+                }
+            }
             return success;
         }
 
-        // Otherwise write to T0
         boolean success = t0.put(key, pageId, slotId);
 
-        // Check if load factor trigger surpassed
         if (t0.loadFactor() >= rehashThreshold && t1 == null) {
             startRehash();
         }
@@ -68,12 +120,9 @@ public class IncrementalRehashIndex implements AutoCloseable {
     public long get(long key) {
         if (t1 != null) {
             long result = t1.get(key);
-            if (result != -1L) {
-                stepRehash();
-                return result;
+            if (result == -1L) {
+                result = t0.get(key);
             }
-
-            result = t0.get(key);
             stepRehash();
             return result;
         }
@@ -105,13 +154,13 @@ public class IncrementalRehashIndex implements AutoCloseable {
      */
     private void startRehash() {
         int newCapacity = t0.capacity() * 2;
-        this.t1 = new OffHeapRobinHoodHashIndex(newCapacity);
+        this.t1 = createEngine(engineType, newCapacity);
         this.rehashCursor = 0;
         this.t0RemainingEntries = t0.size();
     }
 
     /**
-     * Migrates occupied bucket clusters from T0 to T1 with Adaptive Dynamic Tax Pacing.
+     * Migrates occupied bucket clusters from T0 to T1 via 1-cycle Unsafe native address dereferencing.
      */
     private void stepRehash() {
         if (t1 == null) {
@@ -123,33 +172,34 @@ public class IncrementalRehashIndex implements AutoCloseable {
             return;
         }
 
-        // Adaptive Pacing: scale migration tax during heavy write bursts
         int t1AvailableSpace = Math.max(1, t1.capacity() - t1.size());
         int tax = Math.max(1, (int) Math.ceil((double) t0RemainingEntries / t1AvailableSpace));
 
         int capacity = t0.capacity();
+        long t0Address = t0.rawAddress();
 
         for (int stepTax = 0; stepTax < tax; stepTax++) {
             boolean migrated = false;
             for (int i = 0; i < capacity; i++) {
-                int targetIdx = (rehashCursor + i) & (capacity - 1); // Power of 2 fast bitmasking
+                int targetIdx = (rehashCursor + i) & (capacity - 1);
                 long bOffset = (long) targetIdx << OffHeapRobinHoodHashIndex.BUCKET_SHIFT;
+                long bAddress = t0Address + bOffset;
 
-                long word1 = t0.segment().get(ValueLayout.JAVA_LONG, bOffset + OffHeapRobinHoodHashIndex.WORD1_OFFSET);
+                // 1-Cycle Unsafe Direct Address Read
+                long word1 = UNSAFE.getLong(bAddress + OffHeapRobinHoodHashIndex.WORD1_OFFSET);
                 short distance = (short) word1;
 
                 if (distance != OffHeapRobinHoodHashIndex.EMPTY_DISTANCE) {
-                    long word0 = t0.segment().get(ValueLayout.JAVA_LONG, bOffset + OffHeapRobinHoodHashIndex.WORD0_OFFSET);
-
+                    long word0 = UNSAFE.getLong(bAddress + OffHeapRobinHoodHashIndex.WORD0_OFFSET);
+                    short fingerprint = (short) (word0 >>> 48);
                     short slotId = (short) (word0 >>> 32);
                     int pageId = (int) word0;
+                    int hashUpper = (int) (word1 >>> 32);
 
-                    long keySeed = (((long) pageId) << 32) | (slotId & 0xFFFFL);
-                    t1.put(keySeed, pageId, slotId);
+                    // Reconstruct 100% exact 64-bit hash via engine implementation
+                    long originalHash = t0.reconstructHash(targetIdx, distance, fingerprint, hashUpper);
 
-                    // Mark bucket in T0 as empty
-                    t0.segment().set(ValueLayout.JAVA_SHORT, bOffset + OffHeapRobinHoodHashIndex.DISTANCE_OFFSET,
-                            OffHeapRobinHoodHashIndex.EMPTY_DISTANCE);
+                    t1.putByHash(originalHash, pageId, slotId);
 
                     rehashCursor = (targetIdx + 1) & (capacity - 1);
                     t0RemainingEntries--;
@@ -178,6 +228,10 @@ public class IncrementalRehashIndex implements AutoCloseable {
         t1 = null;
         rehashCursor = 0;
         t0RemainingEntries = 0;
+    }
+
+    public IndexEngineType engineType() {
+        return engineType;
     }
 
     public boolean isRehashing() {

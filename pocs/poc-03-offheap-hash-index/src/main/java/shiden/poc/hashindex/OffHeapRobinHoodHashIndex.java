@@ -20,7 +20,7 @@ import java.lang.foreign.ValueLayout;
  * </ul>
  * </p>
  */
-public class OffHeapRobinHoodHashIndex implements AutoCloseable {
+public class OffHeapRobinHoodHashIndex implements ShidenHashIndex {
 
     public static final short EMPTY_DISTANCE = (short) -1; // 0xFFFF
     public static final int BUCKET_SIZE_BYTES = 16;
@@ -73,11 +73,14 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
     }
 
     public boolean put(long key, int pageId, short slotId) {
+        return putByHash(XxHash3.hash64(key), pageId, slotId);
+    }
+
+    public boolean putByHash(long hash, int pageId, short slotId) {
         if (size >= capacity) {
             return false;
         }
 
-        long hash = XxHash3.hash64(key);
         short fingerprint = XxHash3.extractFingerprint(hash);
         int hashUpper = (int) (hash >>> 16);
         int idealIndex = (int) (hash & mask);
@@ -87,6 +90,7 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
         short incomingSlotId = slotId;
         int incomingPageId = pageId;
         int incomingHashUpper = hashUpper;
+        short incomingFrequency = 0;
 
         int currIndex = idealIndex;
 
@@ -101,7 +105,8 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
                             ((incomingSlotId & 0xFFFFL) << 32) |
                             ((incomingFingerprint & 0xFFFFL) << 48);
                 long newWord1 = (incomingDistance & 0xFFFFL) |
-                               (((long) incomingHashUpper) << 32);
+                               ((incomingFrequency & 0xFFFFL) << 16) |
+                               (((long) incomingHashUpper & 0xFFFFFFFFL) << 32);
 
                 segment.set(ValueLayout.JAVA_LONG, bOffset + WORD0_OFFSET, word0);
                 segment.set(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET, newWord1);
@@ -118,6 +123,7 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
             short currSlotId = (short) (word0 >>> 32);
             int currPageId = (int) word0;
             int currHashUpper = (int) (word1 >>> 32);
+            short currFrequency = (short) (word1 >>> 16);
 
             // 2. Duplicate record update check
             if (currFingerprint == incomingFingerprint &&
@@ -135,7 +141,8 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
                                ((incomingSlotId & 0xFFFFL) << 32) |
                                ((incomingFingerprint & 0xFFFFL) << 48);
                 long newWord1 = (incomingDistance & 0xFFFFL) |
-                               (((long) incomingHashUpper) << 32);
+                               ((incomingFrequency & 0xFFFFL) << 16) |
+                               (((long) incomingHashUpper & 0xFFFFFFFFL) << 32);
 
                 segment.set(ValueLayout.JAVA_LONG, bOffset + WORD0_OFFSET, newWord0);
                 segment.set(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET, newWord1);
@@ -145,14 +152,11 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
                 incomingSlotId = currSlotId;
                 incomingPageId = currPageId;
                 incomingHashUpper = currHashUpper;
+                incomingFrequency = currFrequency;
             }
 
             currIndex = (currIndex + 1) & mask;
             incomingDistance++;
-
-            if (incomingDistance > maxProbeLength) {
-                maxProbeLength = incomingDistance;
-            }
         }
 
         return false;
@@ -160,14 +164,13 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
 
     public long get(long key) {
         long hash = XxHash3.hash64(key);
+        int currIndex = (int) (hash & mask);
         short fingerprint = XxHash3.extractFingerprint(hash);
         int hashUpper = (int) (hash >>> 16);
-        int currIndex = (int) (hash & mask);
         short probeDistance = 0;
 
         for (int step = 0; step < capacity; step++) {
             long bOffset = (long) currIndex << BUCKET_SHIFT;
-
             long word1 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET);
             short currDistance = (short) word1;
 
@@ -195,15 +198,14 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
     public long getWithMetrics(long key) {
         totalLookups++;
         long hash = XxHash3.hash64(key);
+        int currIndex = (int) (hash & mask);
         short fingerprint = XxHash3.extractFingerprint(hash);
         int hashUpper = (int) (hash >>> 16);
-        int currIndex = (int) (hash & mask);
         short probeDistance = 0;
 
         for (int step = 0; step < capacity; step++) {
             totalProbes++;
             long bOffset = (long) currIndex << BUCKET_SHIFT;
-
             long word1 = segment.get(ValueLayout.JAVA_LONG, bOffset + WORD1_OFFSET);
             short currDistance = (short) word1;
 
@@ -267,7 +269,7 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
             return false;
         }
 
-        // Backward-Shift Deletion: compact probe cluster backwards
+        // Backward-Shift Deletion
         currIndex = targetIndex;
         while (true) {
             int nextIndex = (currIndex + 1) & mask;
@@ -319,6 +321,20 @@ public class OffHeapRobinHoodHashIndex implements AutoCloseable {
         return fingerprintEvaluations == 0 ? 1.0 : (double) fingerprintRejections / fingerprintEvaluations;
     }
 
+    @Override
+    public long reconstructHash(int bucketIdx, short distance, short fingerprint, int hashUpper) {
+        int idealIndex = (bucketIdx - distance) & mask;
+        return (((long) fingerprint & 0xFFFFL) << 48) |
+               (((long) hashUpper & 0xFFFFFFFFL) << 16) |
+               (idealIndex & 0xFFFFL);
+    }
+
+    @Override
+    public long rawAddress() {
+        return segment.address();
+    }
+
+    @Override
     public MemorySegment segment() {
         return segment;
     }

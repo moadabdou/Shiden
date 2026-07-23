@@ -25,7 +25,7 @@ import java.lang.reflect.Field;
  * </ul>
  * </p>
  */
-public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
+public class ContiguousShardedOffHeapHashIndex implements ShidenHashIndex {
 
     private static final Unsafe UNSAFE;
 
@@ -129,11 +129,14 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
      * @return true if inserted/updated successfully; false if target shard is full
      */
     public boolean put(long key, int pageId, short slotId) {
+        return putByHash(XxHash3.hash64(key), pageId, slotId);
+    }
+
+    public boolean putByHash(long hash, int pageId, short slotId) {
         if (size >= totalCapacity) {
             return false;
         }
 
-        long hash = XxHash3.hash64(key);
         int shardIdx = (int) ((hash >>> shardShift) & shardMask);
         long shardBaseOffset = shardIdx * shardSizeBytes;
         int idealIndex = (int) (hash & shardCapacityMask);
@@ -471,6 +474,23 @@ public class ContiguousShardedOffHeapHashIndex implements AutoCloseable {
      */
     public double fingerprintRejectionRate() {
         return fingerprintEvaluations == 0 ? 1.0 : (double) fingerprintRejections / fingerprintEvaluations;
+    }
+
+    @Override
+    public long reconstructHash(int bucketIdx, short distance, short fingerprint, int hashUpper) {
+        int shardIdx = bucketIdx / shardCapacity;
+        int shardLocalIdx = bucketIdx & shardCapacityMask;
+        int idealLocalIndex = (shardLocalIdx - distance) & shardCapacityMask;
+        int idealTableIndex = (shardIdx * shardCapacity) + idealLocalIndex;
+
+        return (((long) fingerprint & 0xFFFFL) << 48) |
+               (((long) hashUpper & 0xFFFFFFFFL) << 16) |
+               (idealTableIndex & 0xFFFFL);
+    }
+
+    @Override
+    public long rawAddress() {
+        return rawAddress;
     }
 
     /**
