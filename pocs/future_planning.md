@@ -4,10 +4,17 @@ This document outlines the strategic roadmap for PoCs following **PoC-01** (Cons
 
 ---
 
-## 🎯 Active Milestone: PoC-03 (Off-Heap Hash Index)
+## 🎯 Completed Milestone: PoC-03 (Off-Heap Hash Index)
+* **Status**: **COMPLETED (PASSED)**
+* **Target RFC**: RFC-002 (Off-Heap Hash Index Engine)
+* **Graduation Results**: Achieved 3.21 ns hot lookups, 9.56 ns batch prefetching, 23.34 ns 1M-scale lookup via L2 sharding (4.8x speedup), and 1.56 µs p99.9 tail latency during active rehashing with 0 JVM Heap allocations.
+
+---
+
+## 🎯 Active Milestone: PoC-04 (Thread-per-Core MPSC Mailbox Dispatcher & NUMA Affinity)
 * **Status**: **IN PROGRESS**
-* **Target RFC**: RFC-002 (Off-Heap Hash Index)
-* **Core Question**: Can an off-heap Robin Hood Hash Index using 16-byte buckets, 16-bit key fingerprints, and incremental cluster rehashing achieve $< 15\text{ ns}$ lookups and zero Stop-The-World pause spikes during 2x map resizes?
+* **Target RFC**: RFC-004 (Partition Architecture & Execution Model), RFC-003 (Networking)
+* **Core Question**: Can a thread-per-core MPSC ringbuffer mailbox dispatcher maintain sub-100ns queue enqueue latency and zero lock contention across multi-producer thread workloads while enforcing CPU core pinning?
 
 ---
 

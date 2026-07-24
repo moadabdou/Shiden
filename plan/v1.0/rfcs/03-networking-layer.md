@@ -59,20 +59,28 @@ The Decoder does not create Java `String` or `byte[]` objects. It slices the `By
 
 **The Command Context Layout:**
 ```text
-Command {
+CommandContext {
     RequestID (64-bit)
     OpCode (8-bit)
     ChannelContext (Reference to the Netty Channel / EventLoop)
-    ByteBuf (Zero-copy payload pointer)
+    ByteBuf (Payload reference)
+    OriginatingNumaNode (8-bit ID of the EventLoop's NUMA node)
 }
 ```
 
-### 5.2. Buffer Lifetime & Ownership
-To prevent Use-After-Free crashes in a zero-copy pipeline, buffer lifecycle must be strictly managed via Reference Counting:
-1. **Decode:** The EventLoop decodes the frame and calls `retain()` on the `ByteBuf`.
-2. **Queue:** The `Command` is enqueued to the Partition.
-3. **Execute:** The Partition Owner Thread reads directly from the `ByteBuf`, copying the bytes into the Arena (RFC-001).
-4. **Release:** The Partition Owner Thread calls `release()` on the `ByteBuf` to return it to the network allocator pool.
+### 5.2. Buffer Lifetime & Adaptive NUMA Handoff Policy
+To prevent Use-After-Free crashes while optimizing end-to-end latency under NUMA memory access constraints, buffer lifecycle is managed via reference counting paired with an **Adaptive NUMA-Aware Handoff Policy**:
+
+> **Core System Philosophy**: *The objective of the adaptive policy is not strictly to eliminate memory copies, but to minimize total end-to-end request completion time (p99 tail latency) under NUMA constraints.*
+
+1. **Decode & Annotate:** The EventLoop decodes the frame header, attaches its `OriginatingNumaNode` ID, and slices the off-heap `ByteBuf`.
+2. **Queue:** The `CommandContext` is enqueued to the target Worker Thread's MPSC Mailbox.
+3. **Execute & Release:** When the Worker Thread drains the command, it inspects NUMA locality via a static `WorkerDirectory` map:
+   - **Intra-NUMA (`EventLoop.NUMA == Worker.NUMA`)**: Executed **Zero-Copy**. The Worker reads directly from the retained `ByteBuf` and calls `release()` upon completion. Memory reads operate at local RAM speed ($\sim 1\times$ latency).
+   - **Inter-NUMA (`EventLoop.NUMA != Worker.NUMA`)**:
+     - *Payloads $\le$ Threshold (Initial hypothesis: 512 B)*: Processed **Zero-Copy**. The latency of 1–8 remote cache line fetches across the interconnect is lower than local allocation + copy overhead.
+     - *Payloads $>$ Threshold*: The Worker eagerly copies payload bytes into a **worker-local transient staging buffer** (decoupled from storage engine arenas) and immediately calls `ByteBuf.release()` on the remote buffer. Subsequent parsing, CRC checks, and storage index writes execute 100% out of local RAM.
+4. **Threshold Tuning**: The crossover threshold is validated empirically by PoC-04 benchmarks across payload sizes ($64\text{ B}$ to $8\text{ KB}$) and tuned per hardware deployment.
 
 ### 5.3. Response Ownership & Batch Flushing
 The Partition does *not* possess network context and never allocates outgoing buffers.

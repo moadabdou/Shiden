@@ -39,10 +39,15 @@ To ensure L1 and L2 CPU caches remain blazing hot, Worker Threads are pinned to 
 * If Worker Thread `3` owns Partitions `128-191`, it is permanently bound to CPU Core `3`. 
 * The OS scheduler is prevented from migrating this thread to Core `4`, eliminating cache invalidation penalties.
 
-### 4.2. NUMA Awareness
-Modern servers (e.g., 64-core AMD EPYC processors) consist of multiple CPU sockets and NUMA (Non-Uniform Memory Access) nodes. If a thread on Socket A tries to read memory physically attached to Socket B, the request crosses the motherboard interconnect (Infinity Fabric / QPI), doubling latency.
+### 4.2. NUMA Awareness & Topology Mapping
+Modern servers (e.g., multi-socket AMD EPYC or Intel Xeon processors) consist of multiple CPU sockets and NUMA (Non-Uniform Memory Access) nodes. Accessing remote memory across motherboard interconnects (Infinity Fabric / UPI) incurs a $\sim 2\times\text{--}3\times$ latency penalty and increases bus contention.
 
-* **NUMA-Local Allocation:** When Worker Thread `3` (pinned to NUMA Node 0) allocates its `Arena` pages for its 64 partitions via the FFM API, it strictly instructs the OS to allocate memory exclusively from the RAM physically attached to NUMA Node 0.
+* **First-Touch Memory Placement:** EventLoops and Worker Threads execute under strict CPU core pinning (`sched_setaffinity`). Netty network buffers and FFM Arena pages naturally follow OS **first-touch placement** on the local NUMA node. Platform-specific placement tools (`numactl`, `mbind()`, or custom FFM allocators) are applied where available.
+* **Static `WorkerDirectory` Topology Map:** At startup, Shiden builds an immutable `WorkerDirectory` mapping:
+  ```text
+  WorkerID -> { PhysicalCoreID, NUMA_Node_ID }
+  ```
+  This enables EventLoops and Workers to evaluate cross-socket dispatch status in $O(1)$ time without acquiring locks or querying kernel syscalls during hot-path execution.
 
 ## 5. Message Passing & Mailboxes
 
@@ -53,12 +58,14 @@ Instead of a queue per partition, Shiden uses **One Mailbox per Worker Thread**.
 * The Mailbox is a single, massive **MPSC (Multi-Producer-Single-Consumer) Queue** (powered by JCTools/Agrona).
 * Netty EventLoops (the Producers) enqueue `CommandContext` objects into the Mailbox.
 
-### 5.2. Internal Command Routing
+### 5.2. Internal Command Routing & Locality Check
 When an EventLoop receives `PUT user:123`, the internal routing logic is:
 1. `Hash = xxHash3(user:123)`
 2. `PartitionID = Hash % 1024`
 3. `TargetWorker = PartitionID % 16`
-4. The EventLoop enqueues the Command directly into `Worker Thread [TargetWorker]`'s Mailbox.
+4. `TargetNUMA = WorkerDirectory[TargetWorker].numaNode`
+5. The EventLoop attaches `OriginatingNumaNode` to `CommandContext` and enqueues it directly into `Worker Thread [TargetWorker]`'s Mailbox.
+6. The target Worker Thread evaluates NUMA locality against its local `NUMA_Node_ID` and executes either zero-copy processing or eager copy into a **worker-local transient staging buffer** per **RFC-003 Section 5.2**.
 
 ## 6. The Execution Loop (Cooperative Multitasking)
 
